@@ -20,7 +20,7 @@ uv run main.py -m Qwen3-4B -p "Explain quantum computing"
 uv run main.py -m Qwen3-1.7B -t 0.7 -k 50 -n 512
 
 # Enable thinking mode
-uv run main.py --thinking -p "Solve: 12 * 15 + 3"
+uv run main.py --thinking -p "Which one is bigger? 9.9 or 9.11"
 ```
 
 ### CLI Options
@@ -28,7 +28,7 @@ uv run main.py --thinking -p "Solve: 12 * 15 + 3"
 | Flag | Description | Default |
 |---|---|---|
 | `-m`, `--model` | `Qwen3-0.6B`, `Qwen3-1.7B`, `Qwen3-4B` | `Qwen3-0.6B` |
-| `-p`, `--prompt` | User prompt text | `Hello, who are you?` |
+| `-p`, `--prompt` | User prompt text | `Which is bigger, 9.9 or 9.11?` |
 | `-t`, `--temperature` | Sampling temperature (0 = greedy) | `1.0` |
 | `-k`, `--top-k` | Top-k filtering (-1 = disabled) | `-1` |
 | `-n`, `--max-tokens` | Max new tokens to generate | `1024` |
@@ -75,7 +75,9 @@ qwen3/
 ├── model.py        # Step 7: transformer block + forward pass
 ├── weights.py      # Step 8a: load safetensors weights
 ├── generate.py     # Step 8b: generation loop with KV cache
-└── main.py         # tie it all together
+├── main.py         # tie it all together
+└── tests/
+    └── test_generate.py  # integration tests (single + batch)
 ```
 
 ## Learning Guide
@@ -127,7 +129,7 @@ rotated = concat(-x2, x1)
 output = x * cos + rotated * sin
 ```
 
-Key: during KV-cache generation, use a position offset — the new token at step T uses position T, not 0.
+Key: RoPE accepts a `position_ids` tensor of shape `(batch, seq_len)` — each sequence in a batch can have its own position mapping. This is essential for left-padded batches where padding positions don't correspond to real token positions.
 
 ### Step 5: Grouped Query Attention (`layers.py`)
 
@@ -144,7 +146,7 @@ x → Q, K, V projections
 Weight shapes:
 - `W_q: [1024, 2048]`, `W_k: [1024, 1024]`, `W_v: [1024, 1024]`, `W_o: [2048, 1024]`
 
-Causal mask only needed during prefill. During token-by-token generation with KV cache, the single query token naturally attends to all cached positions.
+Supports an optional `attention_mask` (additive, 0 = attend, -inf = block) for combined causal + padding masking in batch mode. Falls back to auto causal mask for single-sequence inference.
 
 ### Step 6: SwiGLU Feed-Forward (`layers.py`)
 
@@ -166,9 +168,25 @@ Map HuggingFace weight names to your model's state dict keys. HuggingFace stores
 
 ### Step 8b: Generation Loop (`generate.py`)
 
+**Single sequence** (`generate()`):
 1. **Prefill**: forward pass on full prompt, get KV cache
 2. **Decode loop**: forward only the new token, reuse KV cache (grows by 1 each step)
 3. **Sampling**: top-k filtering → temperature scaling → multinomial sampling
+
+**Batch generation** (`generate_batch()`):
+1. **Left-pad** variable-length prompts to the same length using `tokenizer.pad_token_id`
+2. **Build `position_ids`**: padding positions get 0, real tokens get 0, 1, 2, ...
+3. **Build attention mask**: combined causal + padding mask. Padding positions self-attend to avoid NaN from `softmax(all -inf)`
+4. **Prefill + decode** with per-sequence EOS tracking
+5. Batch output matches single-sequence output exactly (verified by tests)
+
+## Tests
+
+```bash
+uv run python -m pytest tests/ -v -m slow
+```
+
+Tests require downloaded checkpoints. Runs math, knowledge, thinking mode, and batch vs. single-sequence equivalence across all three model sizes.
 
 ## Dependencies
 

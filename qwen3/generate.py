@@ -1,6 +1,6 @@
 import torch
 
-from model import Qwen3Model
+from qwen3.model import Qwen3Model
 
 
 def sample(logits, temperature=1.0, top_k=-1):

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from layers import RoPE, RMSNorm, TransformerBlock
+from qwen3.layers import RoPE, RMSNorm, TransformerBlock
 
 
 class Qwen3Model(nn.Module):

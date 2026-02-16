@@ -5,11 +5,11 @@ from pathlib import Path
 
 import torch
 
-from config import Qwen3Config
-from tokenizer import Qwen3Tokenizer
-from model import Qwen3Model
-from weights import load_weights
-from generate import generate
+from qwen3.config import Qwen3Config
+from qwen3.tokenizer import Qwen3Tokenizer
+from qwen3.model import Qwen3Model
+from qwen3.weights import load_weights
+from qwen3.generate import generate
 
 SUPPORTED_MODELS = {
     "Qwen3-0.6B": "Qwen/Qwen3-0.6B",
@@ -96,11 +96,11 @@ def ensure_checkpoint(model_name: str, model_dir: Path):
         except ImportError:
             print("huggingface_hub is not installed.")
             print("  pip install huggingface_hub")
-            print(f"  # or: bash ../scripts/download_qwen3.sh {model_name}")
+            print(f"  # or: bash scripts/download_qwen3.sh {model_name}")
             sys.exit(1)
     else:
         print("To download manually:")
-        print(f"  bash ../scripts/download_qwen3.sh {model_name}")
+        print(f"  bash scripts/download_qwen3.sh {model_name}")
         sys.exit(0)
 
 
@@ -152,7 +152,7 @@ def run_inference(
 def main():
     args = parse_args()
 
-    model_dir = Path("../checkpoints") / args.model
+    model_dir = Path(__file__).resolve().parent.parent / "checkpoints" / args.model
     ensure_checkpoint(args.model, model_dir)
 
     model, tokenizer, config = load_model(model_dir, device=args.device)

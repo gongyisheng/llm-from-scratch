@@ -14,17 +14,16 @@ No `transformers` library. Just raw tensor operations so you understand every li
 
 ## How to Use
 
-Each model directory is independent. Pick one and follow its README:
+All commands run from the project root:
 
 ```bash
 # 1. Download a model checkpoint
 bash scripts/download_qwen3.sh              # default: Qwen3-0.6B
 bash scripts/download_qwen3.sh Qwen3-4B     # or pick a larger model
 
-# 2. cd into the model directory and run
-cd qwen3
-uv run main.py                                              # default: Qwen3-0.6B
-uv run main.py -m Qwen3-4B -p "Explain quantum computing"  # pick model + prompt
+# 2. Run inference
+uv run python -m qwen3.main                                              # default: Qwen3-0.6B
+uv run python -m qwen3.main -m Qwen3-4B -p "Explain quantum computing"  # pick model + prompt
 ```
 
 ## Architecture Comparison
@@ -40,15 +39,13 @@ uv run main.py -m Qwen3-4B -p "Explain quantum computing"  # pick model + prompt
 
 ```
 llm-from-scratch/
+├── pyproject.toml              # shared dependencies
 ├── README.md
-├── scripts/                 # download scripts (one per model)
-│   ├── download_qwen3.sh
-│   └── ...
-├── checkpoints/             # model weights (gitignored)
-│   └── ...
-├── qwen3/                   # each model is self-contained
+├── scripts/                    # download scripts
+│   └── download_qwen3.sh
+├── checkpoints/                # model weights (gitignored)
+├── qwen3/                      # Qwen3 implementation
 │   ├── README.md
-│   ├── pyproject.toml
 │   ├── config.py
 │   ├── tokenizer.py
 │   ├── layers.py
@@ -56,5 +53,14 @@ llm-from-scratch/
 │   ├── weights.py
 │   ├── generate.py
 │   └── main.py
-└── ...                      # more models follow same structure
+├── tests/                      # tests for all models
+│   └── qwen3/
+│       └── test_generate.py
+└── ...                         # more models follow same structure
+```
+
+## Tests
+
+```bash
+uv run python -m pytest tests/ -v -m slow
 ```

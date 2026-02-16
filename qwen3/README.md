@@ -6,21 +6,23 @@ Reference: [saurabhaloneai/qwen3-exp](https://github.com/saurabhaloneai/qwen3-ex
 
 ## Quick Start
 
+All commands run from the **project root** (`llm-from-scratch/`):
+
 ```bash
 # 1. Download model checkpoint (default: Qwen3-0.6B)
-bash ../scripts/download_qwen3.sh
+bash scripts/download_qwen3.sh
 
 # 2. Run inference
-uv run main.py
+uv run python -m qwen3.main
 
 # Pick a different model
-uv run main.py -m Qwen3-4B -p "Explain quantum computing"
+uv run python -m qwen3.main -m Qwen3-4B -p "Explain quantum computing"
 
 # Tune generation parameters
-uv run main.py -m Qwen3-1.7B -t 0.7 -k 50 -n 512
+uv run python -m qwen3.main -m Qwen3-1.7B -t 0.7 -k 50 -n 512
 
 # Enable thinking mode
-uv run main.py --thinking -p "Which one is bigger? 9.9 or 9.11"
+uv run python -m qwen3.main --thinking -p "Which one is bigger? 9.9 or 9.11"
 ```
 
 ### CLI Options
@@ -31,7 +33,7 @@ uv run main.py --thinking -p "Which one is bigger? 9.9 or 9.11"
 | `-p`, `--prompt` | User prompt text | `Which is bigger, 9.9 or 9.11?` |
 | `-t`, `--temperature` | Sampling temperature (0 = greedy) | `1.0` |
 | `-k`, `--top-k` | Top-k filtering (-1 = disabled) | `-1` |
-| `-n`, `--max-tokens` | Max new tokens to generate | `1024` |
+| `-n`, `--max-tokens` | Max new tokens to generate | `4096` |
 | `--thinking` | Enable thinking mode | off |
 | `-d`, `--device` | `cuda`, `cpu`, or `auto` | `auto` |
 
@@ -75,9 +77,10 @@ qwen3/
 ├── model.py        # Step 7: transformer block + forward pass
 ├── weights.py      # Step 8a: load safetensors weights
 ├── generate.py     # Step 8b: generation loop with KV cache
-├── main.py         # tie it all together
-└── tests/
-    └── test_generate.py  # integration tests (single + batch)
+└── main.py         # tie it all together
+
+tests/qwen3/
+└── test_generate.py  # integration tests (single + batch)
 ```
 
 ## Learning Guide
@@ -182,17 +185,14 @@ Map HuggingFace weight names to your model's state dict keys. HuggingFace stores
 
 ## Tests
 
+Run from the project root:
+
 ```bash
-uv run python -m pytest tests/ -v -m slow
+uv run python -m pytest tests/qwen3/ -v -m slow
 ```
 
 Tests require downloaded checkpoints. Runs math, knowledge, thinking mode, and batch vs. single-sequence equivalence across all three model sizes.
 
 ## Dependencies
 
-Managed by [uv](https://docs.astral.sh/uv/). Dependencies are declared in `pyproject.toml` and installed automatically on `uv run`.
-
-For downloading the model checkpoint:
-```bash
-pip install huggingface_hub
-```
+Managed by [uv](https://docs.astral.sh/uv/). Dependencies are declared in the root `pyproject.toml` and installed automatically on `uv run`.

@@ -1,7 +1,7 @@
 [project]
-name = "qwen3-from-scratch"
+name = "llm-from-scratch"
 version = "0.1.0"
-description = "Qwen3 inference from scratch in PyTorch"
+description = "From-scratch PyTorch implementations of popular LLM architectures"
 requires-python = ">=3.11"
 dependencies = [
     "torch",

@@ -1,15 +1,11 @@
 import gc
-import sys
 from pathlib import Path
 
 import pytest
 import torch
 
-# Allow imports from the qwen3 package directory
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from main import load_model, run_inference
-from generate import generate, generate_batch
+from qwen3.main import load_model, run_inference
+from qwen3.generate import generate, generate_batch
 
 CHECKPOINTS_DIR = Path(__file__).resolve().parent.parent.parent / "checkpoints"
 

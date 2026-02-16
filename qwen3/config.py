@@ -53,5 +53,6 @@ class Qwen3Config:
 
 
 if __name__ == "__main__":
-    config = Qwen3Config.from_model_dir("../checkpoints/Qwen3-0.6B")
+    _root = Path(__file__).resolve().parent.parent
+    config = Qwen3Config.from_model_dir(_root / "checkpoints/Qwen3-0.6B")
     print(config)

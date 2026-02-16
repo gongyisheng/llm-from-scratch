@@ -40,7 +40,8 @@ class Qwen3Tokenizer:
 
 
 if __name__ == "__main__":
-    tokenizer = Qwen3Tokenizer.from_model_dir("../checkpoints/Qwen3-0.6B")
+    _root = Path(__file__).resolve().parent.parent
+    tokenizer = Qwen3Tokenizer.from_model_dir(_root / "checkpoints/Qwen3-0.6B")
 
     # single turn
     messages = [{"role": "user", "content": "What is 2+2?"}]

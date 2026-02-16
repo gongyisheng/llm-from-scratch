@@ -60,9 +60,10 @@ def load_weights(model, model_dir: str | Path):
 
 
 if __name__ == "__main__":
-    from config import Qwen3Config
-    from model import Qwen3Model
+    from qwen3.config import Qwen3Config
+    from qwen3.model import Qwen3Model
 
-    config = Qwen3Config.from_model_dir("../checkpoints/Qwen3-0.6B")
+    _root = Path(__file__).resolve().parent.parent
+    config = Qwen3Config.from_model_dir(_root / "checkpoints/Qwen3-0.6B")
     model = Qwen3Model(config)
-    load_weights(model, "../checkpoints/Qwen3-0.6B")
+    load_weights(model, _root / "checkpoints/Qwen3-0.6B")

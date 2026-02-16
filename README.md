@@ -1,0 +1,60 @@
+# LLM From Scratch
+
+From-scratch PyTorch implementations of popular LLM architectures. Each model is a self-contained tutorial — pick one and follow along.
+
+No `transformers` library. Just raw tensor operations so you understand every line.
+
+## Models
+
+| Model | Key Concepts | Status |
+|---|---|---|
+| [Qwen3](qwen3/) (0.6B, 1.7B, 4B) | GQA, QK-Norm, RoPE, SwiGLU, KV Cache | ✅ |
+| Qwen3-MoE | Mixture of Experts, Shared Experts, Router | 🔜 |
+| DeepSeek-V3 | Multi-head Latent Attention, MoE | 🔜 |
+
+## How to Use
+
+Each model directory is independent. Pick one and follow its README:
+
+```bash
+# 1. Download a model checkpoint
+bash scripts/download_qwen3.sh              # default: Qwen3-0.6B
+bash scripts/download_qwen3.sh Qwen3-4B     # or pick a larger model
+
+# 2. cd into the model directory and run
+cd qwen3
+uv run main.py                                              # default: Qwen3-0.6B
+uv run main.py -m Qwen3-4B -p "Explain quantum computing"  # pick model + prompt
+```
+
+## Architecture Comparison
+
+| Component | Qwen3 | Qwen3-MoE | DeepSeek-V3 |
+|---|---|---|---|
+| Attention | GQA + QK-Norm | GQA + QK-Norm | MLA |
+| Position Encoding | RoPE | RoPE | RoPE (YaRN) |
+| FFN | SwiGLU | MoE + Shared Expert | MoE (DeepSeekMoE) |
+| Normalization | RMSNorm | RMSNorm | RMSNorm |
+
+## Project Structure
+
+```
+llm-from-scratch/
+├── README.md
+├── scripts/                 # download scripts (one per model)
+│   ├── download_qwen3.sh
+│   └── ...
+├── checkpoints/             # model weights (gitignored)
+│   └── ...
+├── qwen3/                   # each model is self-contained
+│   ├── README.md
+│   ├── pyproject.toml
+│   ├── config.py
+│   ├── tokenizer.py
+│   ├── layers.py
+│   ├── model.py
+│   ├── weights.py
+│   ├── generate.py
+│   └── main.py
+└── ...                      # more models follow same structure
+```

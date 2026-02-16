@@ -1,0 +1,18 @@
+[project]
+name = "qwen3-from-scratch"
+version = "0.1.0"
+description = "Qwen3 inference from scratch in PyTorch"
+requires-python = ">=3.11"
+dependencies = [
+    "torch",
+    "safetensors",
+    "tokenizers",
+    "jinja2",
+]
+
+[project.optional-dependencies]
+download = ["huggingface_hub"]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+markers = ["slow: run full model inference (requires checkpoints)"]

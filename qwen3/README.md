@@ -149,7 +149,7 @@ x → Q, K, V projections
 Weight shapes:
 - `W_q: [1024, 2048]`, `W_k: [1024, 1024]`, `W_v: [1024, 1024]`, `W_o: [2048, 1024]`
 
-Supports an optional `attention_mask` (additive, 0 = attend, -inf = block) for combined causal + padding masking in batch mode. Falls back to auto causal mask for single-sequence inference.
+Supports an optional `attn_mask` (additive, 0 = attend, -inf = block) for combined causal + padding masking in batch mode. Falls back to auto causal mask for single-sequence inference.
 
 ### Step 6: SwiGLU Feed-Forward (`layers.py`)
 

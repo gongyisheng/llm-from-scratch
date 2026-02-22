@@ -111,11 +111,11 @@ def generate_batch(
     diag = torch.arange(max_len, device=device)
     combined[:, diag, diag] = False
     # additive mask: 0 = attend, -inf = block
-    attention_mask = torch.where(combined, float("-inf"), 0.0)
-    attention_mask = attention_mask.unsqueeze(1).to(dtype)  # (batch, 1, q, kv)
+    attn_mask = torch.where(combined, float("-inf"), 0.0)
+    attn_mask = attn_mask.unsqueeze(1).to(dtype)  # (batch, 1, q, kv)
 
     # --- prefill ---
-    logits, kv_cache = model(padded, position_ids, attention_mask=attention_mask)
+    logits, kv_cache = model(padded, position_ids, attn_mask=attn_mask)
     next_tokens = sample(logits[:, -1, :], temperature=temperature, top_k=top_k)
     if next_tokens.dim() == 1:
         next_tokens = next_tokens.unsqueeze(1)

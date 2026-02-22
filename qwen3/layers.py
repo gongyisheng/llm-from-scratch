@@ -103,7 +103,7 @@ class GroupQueryAttention(nn.Module):
         rope: RoPE,
         position_ids: torch.Tensor,
         kv_cache: tuple[torch.Tensor, torch.Tensor] = None,
-        attention_mask: torch.Tensor = None,
+        attn_mask: torch.Tensor = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
 
         batch, seq_len, _ = x.shape
@@ -139,8 +139,8 @@ class GroupQueryAttention(nn.Module):
 
         # attn score, Q attends to all past tokens via kv cache
         scores = Q @ K.transpose(-2, -1) / (self.head_dim**0.5)
-        if attention_mask is not None:
-            scores = scores + attention_mask
+        if attn_mask is not None:
+            scores = scores + attn_mask
         elif kv_cache is None:
             mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
             scores.masked_fill_(mask, float("-inf"))  # fill -inf to make it's 0 after softmax
@@ -160,7 +160,7 @@ class TransformerBlock(nn.Module):
         self.norm2 = RMSNorm(config.emb_dim)
         self.ffn = SwiGLUFFN(config.emb_dim, config.hidden_dim)
 
-    def forward(self, x, rope, position_ids, kv_cache=None, attention_mask=None):
+    def forward(self, x, rope, position_ids, kv_cache=None, attn_mask=None):
         # residual connection:
         # each layer computes a delta (change), not new representation
         # separates contribution between different modules (attn and ffn)
@@ -172,7 +172,7 @@ class TransformerBlock(nn.Module):
 
         residual = x
         x = self.norm1(x)
-        x, new_kv_cache = self.attn(x, rope, position_ids, kv_cache, attention_mask)
+        x, new_kv_cache = self.attn(x, rope, position_ids, kv_cache, attn_mask)
         x = x + residual
 
         residual = x

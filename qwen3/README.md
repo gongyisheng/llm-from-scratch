@@ -10,7 +10,7 @@ All commands run from the **project root** (`llm-from-scratch/`):
 
 ```bash
 # 1. Download model checkpoint (default: Qwen3-0.6B)
-bash scripts/download_qwen3.sh
+bash scripts/download.sh
 
 # 2. Run inference
 uv run python -m qwen3.main

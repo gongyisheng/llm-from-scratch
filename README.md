@@ -18,8 +18,8 @@ All commands run from the project root:
 
 ```bash
 # 1. Download a model checkpoint
-bash scripts/download_qwen3.sh              # default: Qwen3-0.6B
-bash scripts/download_qwen3.sh Qwen3-4B     # or pick a larger model
+bash scripts/download.sh              # default: Qwen/Qwen3-0.6B
+bash scripts/download.sh Qwen/Qwen3-4B
 
 # 2. Run inference
 uv run python -m qwen3.main                                              # default: Qwen3-0.6B
@@ -42,7 +42,7 @@ llm-from-scratch/
 ├── pyproject.toml              # shared dependencies
 ├── README.md
 ├── scripts/                    # download scripts
-│   └── download_qwen3.sh
+│   └── download.sh
 ├── checkpoints/                # model weights (gitignored)
 ├── qwen3/                      # Qwen3 implementation
 │   ├── README.md

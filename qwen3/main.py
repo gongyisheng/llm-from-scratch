@@ -96,11 +96,11 @@ def ensure_checkpoint(model_name: str, model_dir: Path):
         except ImportError:
             print("huggingface_hub is not installed.")
             print("  pip install huggingface_hub")
-            print(f"  # or: bash scripts/download_qwen3.sh {model_name}")
+            print(f"  # or: bash scripts/download.sh {hf_repo}")
             sys.exit(1)
     else:
         print("To download manually:")
-        print(f"  bash scripts/download_qwen3.sh {model_name}")
+        print(f"  bash scripts/download.sh {hf_repo}")
         sys.exit(0)
 
 

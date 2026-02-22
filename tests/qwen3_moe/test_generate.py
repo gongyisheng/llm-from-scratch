@@ -4,19 +4,21 @@ from pathlib import Path
 import pytest
 import torch
 
-from qwen3.main import load_model, run_inference
-from qwen3.generate import generate_batch
+from qwen3_moe.main import load_model, run_inference
+from qwen3_moe.generate import generate, generate_batch
 
 CHECKPOINTS_DIR = Path(__file__).resolve().parent.parent.parent / "checkpoints"
 
-MODELS = ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-4B"]
+MODELS = ["Qwen3-30B-A3B"]
+
+DEVICE = "cpu"
 
 
 def checkpoint_available(model_name: str) -> bool:
     return (CHECKPOINTS_DIR / model_name / "config.json").exists()
 
 
-# Cache one model at a time to avoid GPU OOM when testing multiple models
+# Cache one model at a time to avoid OOM when testing multiple models
 _model_cache: dict[str, tuple] = {}
 
 
@@ -24,17 +26,13 @@ def get_model(model_name: str):
     if model_name in _model_cache:
         return _model_cache[model_name]
 
-    # Evict previous model to free GPU memory
+    # Evict previous model to free memory
     for key in list(_model_cache):
-        model_ref = _model_cache.pop(key)[0]
-        model_ref.cpu()
-        del model_ref
+        del _model_cache[key]
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     model_dir = CHECKPOINTS_DIR / model_name
-    result = load_model(model_dir)
+    result = load_model(model_dir, device=DEVICE)
 
     _model_cache[model_name] = result
     return result
@@ -94,10 +92,11 @@ def test_thinking_mode(model_name):
 def test_batch(model_name):
     """Batch generation with left padding should produce correct results.
 
-    Note: bfloat16 numerics mean that padding masks can introduce tiny
-    floating-point differences which may accumulate and cause divergent
-    outputs compared to single-sequence generation.  We therefore check
-    semantic correctness instead of exact token equality.
+    Note: MoE models don't guarantee exact match between batch and single-
+    sequence generation because the router's top-k expert selection is
+    discontinuous — tiny floating-point differences from padding masks can
+    flip which experts are selected.  We therefore check semantic correctness
+    instead of exact token equality.
     """
     if not checkpoint_available(model_name):
         pytest.skip(f"Checkpoint {model_name} not downloaded")

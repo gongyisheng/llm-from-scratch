@@ -115,7 +115,7 @@ def generate_batch(
     attention_mask = attention_mask.unsqueeze(1).to(dtype)  # (batch, 1, q, kv)
 
     # --- prefill ---
-    logits, kv_cache = model(padded, position_ids, attention_mask=attention_mask)
+    logits, kv_cache = model(padded, position_ids, attn_mask=attention_mask)
     next_tokens = sample(logits[:, -1, :], temperature=temperature, top_k=top_k)
     if next_tokens.dim() == 1:
         next_tokens = next_tokens.unsqueeze(1)

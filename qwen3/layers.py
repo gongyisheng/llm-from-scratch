@@ -31,7 +31,9 @@ class RoPE(nn.Module):
         self.head_dim = head_dim
         self.base = base
         self.max_seq_len = max_seq_len
+        self._build_buffers()
 
+    def _build_buffers(self):
         # freqs: rotation frequency, geometrically spaced from fast (1.0) to slow (1/base)
         # positions: angle at each position: angle[pos][i] = pos * freq[i]
         freqs = 1.0 / (self.base ** (torch.arange(0, self.head_dim, 2) / self.head_dim))

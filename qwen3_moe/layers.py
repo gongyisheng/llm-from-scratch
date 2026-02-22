@@ -25,14 +25,15 @@ class RoPE(nn.Module):
         self.head_dim = head_dim
         self.rope_base = rope_base
         self.max_seq_len = max_seq_len
+        self._build_buffers()
+
+    def _build_buffers(self):
         freqs = 1.0 / self.rope_base ** (torch.arange(0, self.head_dim, 2) / self.head_dim) # (head_dim/2,)
         positions = torch.arange(0, self.max_seq_len) # (max_seq_len,)
         angles = positions[: ,None] * freqs[None, :] # (max_seq_len, head_dim/2)
         angles = torch.concat([angles, angles], dim=-1) # (max_seq_len, head_dim)
-        sin = torch.sin(angles)
-        cos = torch.cos(angles)
-        self.register_buffer("sin", sin)
-        self.register_buffer("cos", cos)
+        self.register_buffer("sin", torch.sin(angles))
+        self.register_buffer("cos", torch.cos(angles))
     
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         # x.shape: (batch, n_heads, seq_len, head_dim)

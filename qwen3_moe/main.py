@@ -110,6 +110,10 @@ def load_model(model_dir, device="auto"):
     with torch.device("meta"):
         model = Qwen3MoEModel(config)
     load_weights(model, model_dir, dtype=config.dtype)
+    # Recompute RoPE buffers (they were meta tensors during init)
+    for module in model.modules():
+        if hasattr(module, "_build_buffers"):
+            module._build_buffers()
     model.eval()
 
     device = resolve_device(device)

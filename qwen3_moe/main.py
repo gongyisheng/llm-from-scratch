@@ -107,12 +107,13 @@ def load_model(model_dir, device="auto"):
     config = Qwen3MoEConfig.from_model_dir(model_dir)
     tokenizer = Qwen3Tokenizer.from_model_dir(model_dir)
 
-    model = Qwen3MoEModel(config)
-    load_weights(model, model_dir)
+    with torch.device("meta"):
+        model = Qwen3MoEModel(config)
+    load_weights(model, model_dir, dtype=config.dtype)
     model.eval()
 
     device = resolve_device(device)
-    model = model.to(dtype=config.dtype, device=device)
+    model = model.to(device=device)
 
     return model, tokenizer, config
 

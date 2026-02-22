@@ -1,4 +1,5 @@
 from pathlib import Path
+import torch
 from safetensors.torch import load_file
 
 # HF key -> model state_dict key
@@ -45,29 +46,32 @@ def rename_hf_key(hf_key: str) -> str | None:
     return None
 
 
-def load_weights(model, model_dir: str | Path):
+def load_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None):
     model_dir = Path(model_dir)
-    all_weights = {}
+    loaded = 0
     for f in sorted(model_dir.glob("*.safetensors")):
-        all_weights.update(load_file(str(f)))
-
-    renamed = {}
-    for hf_key, tensor in all_weights.items():
-        new_key = rename_hf_key(hf_key)
-        if new_key is None:
-            print(f"skipping unknown key: {hf_key}")
-            continue
-        renamed[new_key] = tensor
-
-    model.load_state_dict(renamed, strict=False)
-    print(f"loaded {len(renamed)} weights")
+        shard = load_file(str(f))
+        renamed = {}
+        for hf_key, tensor in shard.items():
+            new_key = rename_hf_key(hf_key)
+            if new_key is None:
+                print(f"skipping unknown key: {hf_key}")
+                continue
+            if dtype is not None:
+                tensor = tensor.to(dtype=dtype)
+            renamed[new_key] = tensor
+            loaded += 1
+        model.load_state_dict(renamed, strict=False, assign=True)
+        del shard, renamed
+    print(f"loaded {loaded} weights")
 
 if __name__ == "__main__":
-    from qwen3_moe.config import Qwen3Config
+    from qwen3_moe.config import Qwen3MoEConfig
     from qwen3_moe.model import Qwen3MoEModel
 
     _root = Path(__file__).resolve().parent.parent
-    config = Qwen3Config.from_model_dir(_root / "checkpoints/Qwen3-30B-A3B")
-    model = Qwen3MoEModel(config)
-    load_weights(model, _root / "checkpoints/Qwen3-30B-A3B")
+    config = Qwen3MoEConfig.from_model_dir(_root / "checkpoints/Qwen3-30B-A3B")
+    with torch.device("meta"):
+        model = Qwen3MoEModel(config)
+    load_weights(model, _root / "checkpoints/Qwen3-30B-A3B", dtype=config.dtype)
 

@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 from qwen3_moe.config import Qwen3MoEConfig
@@ -12,7 +13,7 @@ class Qwen3MoEModel(nn.Module):
             MoETransformersBlock(config.emb_dim, config.n_heads, config.n_kv_groups, config.head_dim, config.n_experts, config.n_experts_per_token, config.moe_hidden_dim, config.moe_norm_topk_prob) for _ in range(config.n_layers)
         ])
         self.final_norm = RMSNorm(config.emb_dim)
-        self.lm_head = nn.Linear(config.emb_dim, config.vocab_size)
+        self.lm_head = nn.Linear(config.emb_dim, config.vocab_size, bias=False)
         if config.tie_word_embeddings:
             self.lm_head.weight = self.tok_emb.weight
     

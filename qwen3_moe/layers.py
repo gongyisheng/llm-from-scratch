@@ -103,7 +103,7 @@ class GroupQueryAttention(nn.Module):
             # single sequence
             mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
             scores.masked_fill_(mask, float("-inf"))  # fill -inf to make it's 0 after softmax
-        attn = F.softmax(scores, dim=-1)
+        attn = F.softmax(scores, dim=-1, dtype=V.dtype)
         context = attn @ V
 
         context = context.transpose(1,2).reshape(batch, seq_len, -1)

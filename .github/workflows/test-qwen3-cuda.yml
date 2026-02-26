@@ -1,0 +1,27 @@
+name: Test Qwen3 (Nvidia)
+
+on:
+  push:
+    tags: ['run-ci-qwen3']
+
+jobs:
+  test:
+    runs-on: [self-hosted, gpu]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [Qwen3-0.6B, Qwen3-1.7B, Qwen3-4B]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test --extra download
+
+      - name: Download checkpoint
+        run: bash scripts/download.sh Qwen/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest tests/qwen3/ -m slow -v --model ${{ matrix.model }} --device cuda

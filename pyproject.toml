@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "From-scratch PyTorch implementations of popular LLM architectures"
 requires-python = ">=3.11"
 dependencies = [
+    "numpy",
     "torch",
     "safetensors",
     "tokenizers",

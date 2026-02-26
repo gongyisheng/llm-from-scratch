@@ -32,7 +32,7 @@ jobs:
         run: uv sync --extra test --extra download
 
       - name: Download checkpoint
-        run: uv run huggingface-cli download Qwen/${{ matrix.model }} --local-dir checkpoints/${{ matrix.model }}
+        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
 
       - name: Run tests
         run: uv run pytest tests/qwen3/ -m slow -v --model ${{ matrix.model }} --device cuda

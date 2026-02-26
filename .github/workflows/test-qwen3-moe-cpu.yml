@@ -17,6 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         model: [Qwen3-30B-A3B]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
     steps:
       - uses: actions/checkout@v4
         with:

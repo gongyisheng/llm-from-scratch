@@ -8,6 +8,7 @@ dependencies = [
     "safetensors",
     "tokenizers",
     "jinja2",
+    "tiktoken",
 ]
 
 [project.optional-dependencies]

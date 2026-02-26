@@ -9,7 +9,8 @@ No `transformers` library. Just raw tensor operations so you understand every li
 | Model | Key Concepts | Status |
 |---|---|---|
 | [Qwen3](qwen3/) (0.6B, 1.7B, 4B) | GQA, QK-Norm, RoPE, SwiGLU, KV Cache | ✅ |
-| Qwen3-MoE | Mixture of Experts, Shared Experts, Router | 🔜 |
+| [Qwen3-MoE](qwen3_moe/) (30B-A3B) | Mixture of Experts, Router | ✅ |
+| [GPT-OSS](gpt_oss/) (20B) | Attention Sinks, YaRN RoPE, Sliding Window, Clamped SwiGLU, MXFP4 | 🔧 |
 | DeepSeek-V3 | Multi-head Latent Attention, MoE | 🔜 |
 
 ## How to Use
@@ -28,12 +29,12 @@ uv run python -m qwen3.main -m Qwen3-4B -p "Explain quantum computing"  # pick m
 
 ## Architecture Comparison
 
-| Component | Qwen3 | Qwen3-MoE | DeepSeek-V3 |
-|---|---|---|---|
-| Attention | GQA + QK-Norm | GQA + QK-Norm | MLA |
-| Position Encoding | RoPE | RoPE | RoPE (YaRN) |
-| FFN | SwiGLU | MoE + Shared Expert | MoE (DeepSeekMoE) |
-| Normalization | RMSNorm | RMSNorm | RMSNorm |
+| Component | Qwen3 | Qwen3-MoE | GPT-OSS | DeepSeek-V3 |
+|---|---|---|---|---|
+| Attention | GQA + QK-Norm | GQA + QK-Norm | GQA + Sinks + Sliding Window | MLA |
+| Position Encoding | RoPE | RoPE | YaRN RoPE | RoPE (YaRN) |
+| FFN | SwiGLU | MoE (128 experts, top-8) | MoE (32 experts, top-4, clamped SwiGLU) | MoE (DeepSeekMoE) |
+| Normalization | RMSNorm | RMSNorm | RMSNorm | RMSNorm |
 
 ## Project Structure
 

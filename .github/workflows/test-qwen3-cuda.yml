@@ -15,7 +15,7 @@ jobs:
        github.event.issue.pull_request &&
        contains(github.event.comment.body, '/run-ci-qwen3') &&
        !contains(github.event.comment.body, '/run-ci-qwen3-moe'))
-    runs-on: [self-hosted, gpu]
+    runs-on: [self-hosted]
     strategy:
       fail-fast: false
       matrix:

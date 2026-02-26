@@ -28,10 +28,12 @@ jobs:
         uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
-        run: uv sync --extra test --extra download
+        run: |
+          uv sync --extra test --extra download
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Download checkpoint
-        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+        run: bash scripts/download.sh Qwen/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3_moe/ -m slow -v --model ${{ matrix.model }} --device cpu
+        run: pytest tests/qwen3_moe/ -m slow -v --model ${{ matrix.model }} --device cpu

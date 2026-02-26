@@ -21,6 +21,23 @@ jobs:
     env:
       HF_HOME: /media/hdddisk/.cache/huggingface
     steps:
+      - name: Get PR head SHA
+        if: github.event_name == 'issue_comment'
+        id: pr
+        run: echo "sha=$(gh pr view ${{ github.event.issue.number }} --json headRefOid -q .headRefOid)" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Set pending status
+        if: github.event_name == 'issue_comment'
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ steps.pr.outputs.sha }} \
+            -f state=pending \
+            -f context="Test Qwen3 (CPU) / ${{ matrix.model }}" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || github.ref }}
@@ -36,3 +53,14 @@ jobs:
 
       - name: Run tests
         run: uv run pytest tests/qwen3/ -m slow -v --model ${{ matrix.model }} --device cpu
+
+      - name: Set final status
+        if: always() && github.event_name == 'issue_comment'
+        run: |
+          STATE=${{ job.status == 'success' && 'success' || 'failure' }}
+          gh api repos/${{ github.repository }}/statuses/${{ steps.pr.outputs.sha }} \
+            -f state="$STATE" \
+            -f context="Test Qwen3 (CPU) / ${{ matrix.model }}" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        env:
+          GH_TOKEN: ${{ github.token }}

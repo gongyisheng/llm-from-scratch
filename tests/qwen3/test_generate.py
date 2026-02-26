@@ -43,7 +43,7 @@ def infer(model_name: str, device: str, prompt: str, **kwargs):
     model, tokenizer, config = get_model(model_name, device)
     return run_inference(
         model, tokenizer, config, prompt,
-        max_tokens=128, temperature=0, enable_thinking=True, **kwargs,
+        max_tokens=4096, temperature=0, enable_thinking=True, **kwargs,
     )
 
 
@@ -70,6 +70,15 @@ def test_knowledge(model_name, device):
         model_name, device, "What is the capital of France? Reply with just the city name."
     )
     assert "Paris" in output, f"Expected 'Paris' in output, got: {output}"
+
+
+@slow
+def test_comparison(model_name, device):
+    if not checkpoint_available(model_name):
+        pytest.skip(f"Checkpoint {model_name} not downloaded")
+
+    output = infer(model_name, device, "Which is bigger, 9.11 or 9.9? Reply with just the number.")
+    assert "9.9" in output, f"Expected '9.9' in output, got: {output}"
 
 
 @slow

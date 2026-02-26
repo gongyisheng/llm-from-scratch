@@ -3,16 +3,27 @@ name: Test Qwen3 (Nvidia)
 on:
   push:
     tags: ['run-ci-qwen3']
+  issue_comment:
+    types: [created]
 
 jobs:
   test:
+    if: >
+      github.event_name == 'push' ||
+      (github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/run-ci-qwen3') &&
+       !contains(github.event.comment.body, '/run-ci-qwen3-moe'))
     runs-on: [self-hosted, gpu]
     strategy:
       fail-fast: false
       matrix:
         model: [Qwen3-0.6B, Qwen3-1.7B, Qwen3-4B]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'issue_comment' && format('refs/pull/{0}/head', github.event.issue.number) || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -21,7 +32,7 @@ jobs:
         run: uv sync --extra test --extra download
 
       - name: Download checkpoint
-        run: bash scripts/download.sh Qwen/${{ matrix.model }}
+        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
 
       - name: Run tests
         run: uv run pytest tests/qwen3/ -m slow -v --model ${{ matrix.model }} --device cuda

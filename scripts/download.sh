@@ -18,6 +18,6 @@ fi
 MODEL_NAME="${HF_REPO##*/}"
 TARGET_DIR="$REPO_ROOT/checkpoints/$MODEL_NAME"
 
-huggingface-cli download "$HF_REPO" --local-dir "$TARGET_DIR"
+hf download "$HF_REPO" --local-dir "$TARGET_DIR"
 
 echo "Downloaded to $TARGET_DIR"

@@ -1,0 +1,69 @@
+name: Slash Run CI
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  run-ci:
+    # Trigger on /run-ci comment (but not /run-ci-qwen3 or /run-ci-qwen3-moe, those are handled directly by test workflows)
+    if: >
+      github.event.issue.pull_request &&
+      github.event.comment.body == '/run-ci'
+    runs-on: ubuntu-latest
+    steps:
+      - name: React with eyes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+      - name: Re-apply labels to retrigger CI
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.issue.number;
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+            const ciLabels = labels
+              .map(l => l.name)
+              .filter(n => n.startsWith('run-ci-'));
+
+            if (ciLabels.length === 0) {
+              core.warning('No run-ci-* labels found on this PR. Nothing to re-run.');
+              return;
+            }
+
+            // Remove then re-add each label to fire the "labeled" event
+            for (const label of ciLabels) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                name: label
+              });
+            }
+
+            // Small delay to ensure GitHub processes the removal
+            await new Promise(r => setTimeout(r, 1000));
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              labels: ciLabels
+            });
+
+            core.info(`Re-applied labels: ${ciLabels.join(', ')}`);

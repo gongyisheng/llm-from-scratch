@@ -160,7 +160,7 @@ class SwiGLUFFN(nn.Module):
 
 
 class MoEGate(nn.Module):
-    def __init__(self, emb_dim: int):
+    def __init__(self, emb_dim: int ):
         super().__init__()
     
     def forward(self, x: torch.Tensor):

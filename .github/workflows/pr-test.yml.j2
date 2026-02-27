@@ -95,8 +95,11 @@ jobs:
             const url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const checks = [];
 <% for job_name, config in test_jobs.items() %>
-            if ('${{ steps.detect.outputs.has_<< config.family >> }}' === 'true')
-              checks.push('CI / << job_name >>');
+            if ('${{ steps.detect.outputs.has_<< config.family >> }}' === 'true') {
+<% for model in config.models %>
+              checks.push('CI / << job_name >> (<< model >>)');
+<% endfor %>
+            }
 <% endfor %>
             for (const name of checks) {
               await github.rest.repos.createCommitStatus({
@@ -156,25 +159,20 @@ jobs:
 
       - name: Run tests
         run: uv run pytest << config.test_dir >> -m slow -v --model ${{ matrix.model }} --device << config.device >>
-<% endfor %>
-<% for job_name in test_jobs %>
 
-  report-<< job_name >>:
-    needs: [prepare, << job_name >>]
-    if: always() && needs.<< job_name >>.result != 'skipped'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v7
+      - name: Report status
+        if: always()
         continue-on-error: true
+        uses: actions/github-script@v7
         with:
           script: |
-            const result = '${{ needs.<< job_name >>.result }}';
+            const status = '${{ job.status }}';
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner, repo: context.repo.repo,
               sha: '${{ needs.prepare.outputs.head_sha }}',
-              state: result === 'success' ? 'success' : 'failure',
-              context: 'CI / << job_name >>',
-              description: result === 'success' ? 'Tests passed' : 'Tests failed',
+              state: status === 'success' ? 'success' : 'failure',
+              context: 'CI / << job_name >> (${{ matrix.model }})',
+              description: status === 'success' ? 'Tests passed' : 'Tests failed',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
 <% endfor %>

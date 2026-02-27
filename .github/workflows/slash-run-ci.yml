@@ -53,21 +53,34 @@ jobs:
             core.setOutput('has_qwen3', hasQwen3);
             core.setOutput('has_qwen3_moe', hasQwen3Moe);
 
-      - name: Set pending status on PR
+      - name: Set pending statuses on PR
         continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
             const sha = '${{ steps.detect.outputs.head_sha }}';
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              sha: sha,
-              state: 'pending',
-              context: 'Slash Run CI',
-              description: 'CI triggered by /run-ci',
-              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-            });
+            const hasQwen3 = '${{ steps.detect.outputs.has_qwen3 }}' === 'true';
+            const hasQwen3Moe = '${{ steps.detect.outputs.has_qwen3_moe }}' === 'true';
+            const url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const checks = [];
+            if (hasQwen3) {
+              checks.push('CI / test-qwen3-cpu');
+              checks.push('CI / test-qwen3-cuda');
+            }
+            if (hasQwen3Moe) {
+              checks.push('CI / test-qwen3-moe-cpu');
+            }
+            for (const name of checks) {
+              await github.rest.repos.createCommitStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha,
+                state: 'pending',
+                context: name,
+                description: 'Queued',
+                target_url: url
+              });
+            }
 
       - name: Add labels to PR
         continue-on-error: true
@@ -118,28 +131,59 @@ jobs:
       test_dir: tests/qwen3_moe/
       pr_sha: ${{ needs.prepare.outputs.head_sha }}
 
-  report-status:
-    needs: [prepare, test-qwen3-cpu, test-qwen3-cuda, test-qwen3-moe-cpu]
-    if: always() && needs.prepare.result == 'success'
+  report-qwen3-cpu:
+    needs: [prepare, test-qwen3-cpu]
+    if: always() && needs.test-qwen3-cpu.result != 'skipped'
     runs-on: ubuntu-latest
     steps:
-      - name: Report final status
-        uses: actions/github-script@v7
+      - uses: actions/github-script@v7
         continue-on-error: true
         with:
           script: |
-            const results = [
-              '${{ needs.test-qwen3-cpu.result }}',
-              '${{ needs.test-qwen3-cuda.result }}',
-              '${{ needs.test-qwen3-moe-cpu.result }}'
-            ].filter(r => r !== 'skipped');
-            const failed = results.some(r => r === 'failure');
+            const result = '${{ needs.test-qwen3-cpu.result }}';
             await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: context.repo.owner, repo: context.repo.repo,
               sha: '${{ needs.prepare.outputs.head_sha }}',
-              state: failed ? 'failure' : 'success',
-              context: 'Slash Run CI',
-              description: failed ? 'CI failed' : 'CI passed',
+              state: result === 'success' ? 'success' : 'failure',
+              context: 'CI / test-qwen3-cpu',
+              description: result === 'success' ? 'Tests passed' : 'Tests failed',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+
+  report-qwen3-cuda:
+    needs: [prepare, test-qwen3-cuda]
+    if: always() && needs.test-qwen3-cuda.result != 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const result = '${{ needs.test-qwen3-cuda.result }}';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner, repo: context.repo.repo,
+              sha: '${{ needs.prepare.outputs.head_sha }}',
+              state: result === 'success' ? 'success' : 'failure',
+              context: 'CI / test-qwen3-cuda',
+              description: result === 'success' ? 'Tests passed' : 'Tests failed',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+
+  report-qwen3-moe-cpu:
+    needs: [prepare, test-qwen3-moe-cpu]
+    if: always() && needs.test-qwen3-moe-cpu.result != 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const result = '${{ needs.test-qwen3-moe-cpu.result }}';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner, repo: context.repo.repo,
+              sha: '${{ needs.prepare.outputs.head_sha }}',
+              state: result === 'success' ? 'success' : 'failure',
+              context: 'CI / test-qwen3-moe-cpu',
+              description: result === 'success' ? 'Tests passed' : 'Tests failed',
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });

@@ -13,7 +13,6 @@ permissions:
 
 jobs:
   auto-label:
-    # Run on PR push, or on /tag comment
     if: >
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' &&
@@ -65,40 +64,23 @@ jobs:
             core.setOutput('qwen3', hasQwen3);
             core.setOutput('qwen3_moe', hasQwen3Moe);
 
-      - name: Get current labels
-        id: labels
+      - name: Add labels
         uses: actions/github-script@v7
         with:
           script: |
-            const { data: labels } = await github.rest.issues.listLabelsOnIssue({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: ${{ steps.pr.outputs.number }}
-            });
-            const names = labels.map(l => l.name);
-            core.setOutput('has_qwen3', names.includes('run-ci-qwen3'));
-            core.setOutput('has_qwen3_moe', names.includes('run-ci-qwen3-moe'));
+            const prNumber = ${{ steps.pr.outputs.number }};
+            const hasQwen3 = '${{ steps.files.outputs.qwen3 }}' === 'true';
+            const hasQwen3Moe = '${{ steps.files.outputs.qwen3_moe }}' === 'true';
 
-      - name: Add run-ci-qwen3 label
-        if: steps.files.outputs.qwen3 == 'true' && steps.labels.outputs.has_qwen3 != 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: ${{ steps.pr.outputs.number }},
-              labels: ['run-ci-qwen3']
-            });
+            const ciLabels = [];
+            if (hasQwen3) ciLabels.push('run-ci-qwen3');
+            if (hasQwen3Moe) ciLabels.push('run-ci-qwen3-moe');
 
-      - name: Add run-ci-qwen3-moe label
-        if: steps.files.outputs.qwen3_moe == 'true' && steps.labels.outputs.has_qwen3_moe != 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: ${{ steps.pr.outputs.number }},
-              labels: ['run-ci-qwen3-moe']
-            });
+            if (ciLabels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                labels: ciLabels
+              });
+            }

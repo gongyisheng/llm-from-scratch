@@ -12,10 +12,8 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dtype = x.dtype
         x = x.to(torch.float32)
-        rms = x.pow(2).mean(dim=-1, keepdim=True).sqrt()
-        output = x / (rms + self.eps) * self.weight
-        output = output.to(dtype)
-        return output
+        x = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return self.weight * x.to(dtype)
 
 
 class RoPE(nn.Module):
@@ -37,11 +35,8 @@ class RoPE(nn.Module):
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         # x.shape: (batch, n_heads, seq_len, head_dim)
         # postion_ids.shape: (batch, seq_len)
-        cos = self.cos[position_ids]
-        sin = self.sin[position_ids]
-
-        cos = cos[:, None, :, :] # (batch, 1, seq_len, head_dim)
-        sin = sin[:, None, :, :]
+        cos = self.cos[position_ids][:, None, :, :].to(x.dtype)  # (batch, 1, seq_len, head_dim)
+        sin = self.sin[position_ids][:, None, :, :].to(x.dtype)
 
         x1 = x[..., :self.head_dim // 2]
         x2 = x[..., self.head_dim // 2:]
@@ -103,7 +98,7 @@ class GroupQueryAttention(nn.Module):
             # single sequence
             mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
             scores.masked_fill_(mask, float("-inf"))  # fill -inf to make it's 0 after softmax
-        attn = F.softmax(scores, dim=-1, dtype=x.dtype)
+        attn = F.softmax(scores, dim=-1, dtype=torch.float32).to(x.dtype)
         context = attn @ V
 
         context = context.transpose(1,2).reshape(batch, seq_len, -1)

@@ -111,8 +111,6 @@ def test_batch(model_name, device):
     ]
     expected = ["4", "Paris"]
 
-    max_tokens = 64
-
     # --- batch output ---
     all_token_ids = []
     for prompt in prompts:
@@ -124,7 +122,6 @@ def test_batch(model_name, device):
         batch_outputs = generate_batch(
             model,
             all_token_ids,
-            max_new_tokens=max_tokens,
             temperature=0,
             eos_token_id=config.eos_token_id,
             pad_token_id=tokenizer.pad_token_id,

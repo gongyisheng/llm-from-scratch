@@ -59,6 +59,11 @@ def load_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None)
             loaded += 1
         model.load_state_dict(renamed, strict=False, assign=True)
         del shard, renamed
+    # assign=True replaces Parameter objects, breaking weight tying.
+    # Re-tie lm_head to tok_emb when the checkpoint omits lm_head.weight.
+    if hasattr(model, "lm_head") and hasattr(model, "tok_emb"):
+        if model.lm_head.weight.is_meta and not model.tok_emb.weight.is_meta:
+            model.lm_head.weight = model.tok_emb.weight
     print(f"loaded {loaded} weights")
 
 

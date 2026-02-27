@@ -193,6 +193,10 @@ uv run python -m pytest tests/qwen3/ -v -m slow
 
 Tests require downloaded checkpoints. Runs math, knowledge, thinking mode, and batch vs. single-sequence equivalence across all three model sizes.
 
+## Notes
+
+**Weight tying vs `load_state_dict(assign=True)`**: When `tie_word_embeddings=True`, the model ties `lm_head.weight` to `tok_emb.weight` during init. However, `assign=True` replaces Parameter objects, breaking this tie. Some HuggingFace checkpoints (e.g. Qwen3-0.6B) redundantly include `lm_head.weight` so it gets loaded anyway, while others (e.g. Qwen3-4B) omit it — leaving `lm_head.weight` as an uninitialized meta tensor. Our `load_weights` detects this via `is_meta` and re-ties automatically.
+
 ## Dependencies
 
 Managed by [uv](https://docs.astral.sh/uv/). Dependencies are declared in the root `pyproject.toml` and installed automatically on `uv run`.

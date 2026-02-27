@@ -21,17 +21,6 @@ jobs:
       has_qwen3: ${{ steps.label.outputs.has_qwen3 }}
       has_qwen3_moe: ${{ steps.label.outputs.has_qwen3_moe }}
     steps:
-      - name: React with eyes
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.reactions.createForIssueComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: context.payload.comment.id,
-              content: 'eyes'
-            });
-
       - name: Add labels based on changed files
         id: label
         uses: actions/github-script@v7

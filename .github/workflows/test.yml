@@ -1,0 +1,47 @@
+name: Test
+
+on:
+  workflow_call:
+    inputs:
+      models:
+        description: 'JSON array of model names, e.g. ["Qwen3-0.6B","Qwen3-1.7B"]'
+        required: true
+        type: string
+      device:
+        description: 'Test device: cpu or cuda'
+        required: true
+        type: string
+      test_dir:
+        description: 'Test directory, e.g. tests/qwen3/'
+        required: true
+        type: string
+      pr_sha:
+        description: 'PR head SHA to checkout'
+        required: true
+        type: string
+
+jobs:
+  test:
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJson(inputs.models) }}
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pr_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test --extra download
+
+      - name: Download checkpoint
+        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest ${{ inputs.test_dir }} -m slow -v --model ${{ matrix.model }} --device ${{ inputs.device }}

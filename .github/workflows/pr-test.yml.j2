@@ -1,0 +1,180 @@
+<%- set model_families = {
+    'qwen3': {
+        'label': 'run-ci-qwen3',
+        'src_dirs': ['qwen3/', 'tests/qwen3/'],
+        'exclude_dirs': ['qwen3_moe/', 'tests/qwen3_moe/'],
+    },
+    'qwen3_moe': {
+        'label': 'run-ci-qwen3-moe',
+        'src_dirs': ['qwen3_moe/', 'tests/qwen3_moe/'],
+        'exclude_dirs': [],
+    },
+} -%>
+
+<%- set test_jobs = {
+    'test-qwen3-cpu': {
+        'family': 'qwen3',
+        'device': 'cpu',
+        'test_dir': 'tests/qwen3/',
+        'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B', 'Qwen3-8B', 'Qwen3-14B', 'Qwen3-32B'],
+    },
+    'test-qwen3-cuda': {
+        'family': 'qwen3',
+        'device': 'cuda',
+        'test_dir': 'tests/qwen3/',
+        'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
+    },
+    'test-qwen3-moe-cpu': {
+        'family': 'qwen3_moe',
+        'device': 'cpu',
+        'test_dir': 'tests/qwen3_moe/',
+        'models': ['Qwen3-30B-A3B'],
+    },
+} -%>
+
+name: PR Test
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  pull-requests: read
+  issues: write
+  actions: write
+  contents: read
+  statuses: write
+
+jobs:
+  prepare:
+    if: >
+      github.event.issue.pull_request &&
+      github.event.comment.body == '/run-ci'
+    runs-on: ubuntu-latest
+    outputs:
+      head_sha: ${{ steps.detect.outputs.head_sha }}
+<% for name in model_families %>
+      has_<< name >>: ${{ steps.detect.outputs.has_<< name >> }}
+<%- endfor %>
+
+    steps:
+      - name: Detect changed files
+        id: detect
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.issue.number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            core.setOutput('head_sha', pr.head.sha);
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              per_page: 100
+            });
+            const filenames = files.map(f => f.filename);
+<% for name, config in model_families.items() %>
+            const has_<< name >> = filenames.some(f =>
+              << config.src_dirs | tojson >>.some(d => f.startsWith(d))<% if config.exclude_dirs %> &&
+              !<< config.exclude_dirs | tojson >>.some(d => f.startsWith(d))<% endif %>
+            );
+            core.setOutput('has_<< name >>', has_<< name >>);
+<% endfor %>
+
+      - name: Set pending statuses on PR
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = '${{ steps.detect.outputs.head_sha }}';
+            const url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const checks = [];
+<% for job_name, config in test_jobs.items() %>
+            if ('${{ steps.detect.outputs.has_<< config.family >> }}' === 'true')
+              checks.push('CI / << job_name >>');
+<% endfor %>
+            for (const name of checks) {
+              await github.rest.repos.createCommitStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha,
+                state: 'pending',
+                context: name,
+                description: 'Queued',
+                target_url: url
+              });
+            }
+
+      - name: Add labels to PR
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ciLabels = [];
+<% for name, config in model_families.items() %>
+            if ('${{ steps.detect.outputs.has_<< name >> }}' === 'true')
+              ciLabels.push('<< config.label >>');
+<% endfor %>
+            if (ciLabels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                labels: ciLabels
+              });
+            }
+<% for job_name, config in test_jobs.items() %>
+
+  << job_name >>:
+    needs: prepare
+    if: needs.prepare.outputs.has_<< config.family >> == 'true'
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: << config.models | tojson >>
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test --extra download
+
+      - name: Download checkpoint
+        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest << config.test_dir >> -m slow -v --model ${{ matrix.model }} --device << config.device >>
+<% endfor %>
+<% for job_name in test_jobs %>
+
+  report-<< job_name >>:
+    needs: [prepare, << job_name >>]
+    if: always() && needs.<< job_name >>.result != 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const result = '${{ needs.<< job_name >>.result }}';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner, repo: context.repo.repo,
+              sha: '${{ needs.prepare.outputs.head_sha }}',
+              state: result === 'success' ? 'success' : 'failure',
+              context: 'CI / << job_name >>',
+              description: result === 'success' ? 'Tests passed' : 'Tests failed',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+<% endfor %>

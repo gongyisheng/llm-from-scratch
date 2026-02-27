@@ -1,4 +1,7 @@
-name: Slash Run CI
+################################################################################
+# Auto-generated from pr-test.yml.j2 — do not edit manually.
+################################################################################
+name: PR Test
 
 on:
   issue_comment:
@@ -19,8 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       head_sha: ${{ steps.detect.outputs.head_sha }}
+
       has_qwen3: ${{ steps.detect.outputs.has_qwen3 }}
       has_qwen3_moe: ${{ steps.detect.outputs.has_qwen3_moe }}
+
     steps:
       - name: Detect changed files
         id: detect
@@ -42,16 +47,18 @@ jobs:
               per_page: 100
             });
             const filenames = files.map(f => f.filename);
-            const hasQwen3 = filenames.some(f =>
-              (f.startsWith('qwen3/') || f.startsWith('tests/qwen3/')) &&
-              !f.startsWith('qwen3_moe/') && !f.startsWith('tests/qwen3_moe/')
-            );
-            const hasQwen3Moe = filenames.some(f =>
-              f.startsWith('qwen3_moe/') || f.startsWith('tests/qwen3_moe/')
-            );
 
-            core.setOutput('has_qwen3', hasQwen3);
-            core.setOutput('has_qwen3_moe', hasQwen3Moe);
+            const has_qwen3 = filenames.some(f =>
+              ["qwen3/", "tests/qwen3/"].some(d => f.startsWith(d)) &&
+              !["qwen3_moe/", "tests/qwen3_moe/"].some(d => f.startsWith(d))
+            );
+            core.setOutput('has_qwen3', has_qwen3);
+
+            const has_qwen3_moe = filenames.some(f =>
+              ["qwen3_moe/", "tests/qwen3_moe/"].some(d => f.startsWith(d))
+            );
+            core.setOutput('has_qwen3_moe', has_qwen3_moe);
+
 
       - name: Set pending statuses on PR
         continue-on-error: true
@@ -59,17 +66,18 @@ jobs:
         with:
           script: |
             const sha = '${{ steps.detect.outputs.head_sha }}';
-            const hasQwen3 = '${{ steps.detect.outputs.has_qwen3 }}' === 'true';
-            const hasQwen3Moe = '${{ steps.detect.outputs.has_qwen3_moe }}' === 'true';
             const url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const checks = [];
-            if (hasQwen3) {
+
+            if ('${{ steps.detect.outputs.has_qwen3 }}' === 'true')
               checks.push('CI / test-qwen3-cpu');
+
+            if ('${{ steps.detect.outputs.has_qwen3 }}' === 'true')
               checks.push('CI / test-qwen3-cuda');
-            }
-            if (hasQwen3Moe) {
+
+            if ('${{ steps.detect.outputs.has_qwen3_moe }}' === 'true')
               checks.push('CI / test-qwen3-moe-cpu');
-            }
+
             for (const name of checks) {
               await github.rest.repos.createCommitStatus({
                 owner: context.repo.owner,
@@ -87,11 +95,14 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const hasQwen3 = '${{ steps.detect.outputs.has_qwen3 }}' === 'true';
-            const hasQwen3Moe = '${{ steps.detect.outputs.has_qwen3_moe }}' === 'true';
             const ciLabels = [];
-            if (hasQwen3) ciLabels.push('run-ci-qwen3');
-            if (hasQwen3Moe) ciLabels.push('run-ci-qwen3-moe');
+
+            if ('${{ steps.detect.outputs.has_qwen3 }}' === 'true')
+              ciLabels.push('run-ci-qwen3');
+
+            if ('${{ steps.detect.outputs.has_qwen3_moe }}' === 'true')
+              ciLabels.push('run-ci-qwen3-moe');
+
             if (ciLabels.length > 0) {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
@@ -101,37 +112,93 @@ jobs:
               });
             }
 
+
   test-qwen3-cpu:
     needs: prepare
     if: needs.prepare.outputs.has_qwen3 == 'true'
-    uses: ./.github/workflows/test.yml
-    with:
-      models: '["Qwen3-0.6B","Qwen3-1.7B","Qwen3-4B","Qwen3-8B","Qwen3-14B","Qwen3-32B"]'
-      device: cpu
-      test_dir: tests/qwen3/
-      pr_sha: ${{ needs.prepare.outputs.head_sha }}
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-4B", "Qwen3-8B", "Qwen3-14B", "Qwen3-32B"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test --extra download
+
+      - name: Download checkpoint
+        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest tests/qwen3/ -m slow -v --model ${{ matrix.model }} --device cpu
+
 
   test-qwen3-cuda:
     needs: prepare
     if: needs.prepare.outputs.has_qwen3 == 'true'
-    uses: ./.github/workflows/test.yml
-    with:
-      models: '["Qwen3-0.6B","Qwen3-1.7B","Qwen3-4B"]'
-      device: cuda
-      test_dir: tests/qwen3/
-      pr_sha: ${{ needs.prepare.outputs.head_sha }}
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-4B"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test --extra download
+
+      - name: Download checkpoint
+        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest tests/qwen3/ -m slow -v --model ${{ matrix.model }} --device cuda
+
 
   test-qwen3-moe-cpu:
     needs: prepare
     if: needs.prepare.outputs.has_qwen3_moe == 'true'
-    uses: ./.github/workflows/test.yml
-    with:
-      models: '["Qwen3-30B-A3B"]'
-      device: cpu
-      test_dir: tests/qwen3_moe/
-      pr_sha: ${{ needs.prepare.outputs.head_sha }}
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["Qwen3-30B-A3B"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
 
-  report-qwen3-cpu:
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test --extra download
+
+      - name: Download checkpoint
+        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest tests/qwen3_moe/ -m slow -v --model ${{ matrix.model }} --device cpu
+
+
+
+  report-test-qwen3-cpu:
     needs: [prepare, test-qwen3-cpu]
     if: always() && needs.test-qwen3-cpu.result != 'skipped'
     runs-on: ubuntu-latest
@@ -150,7 +217,8 @@ jobs:
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
 
-  report-qwen3-cuda:
+
+  report-test-qwen3-cuda:
     needs: [prepare, test-qwen3-cuda]
     if: always() && needs.test-qwen3-cuda.result != 'skipped'
     runs-on: ubuntu-latest
@@ -169,7 +237,8 @@ jobs:
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
             });
 
-  report-qwen3-moe-cpu:
+
+  report-test-qwen3-moe-cpu:
     needs: [prepare, test-qwen3-moe-cpu]
     if: always() && needs.test-qwen3-moe-cpu.result != 'skipped'
     runs-on: ubuntu-latest

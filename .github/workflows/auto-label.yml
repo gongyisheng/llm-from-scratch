@@ -1,0 +1,104 @@
+name: Auto Label
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  auto-label:
+    # Run on PR push, or on /tag comment
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/tag'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: React with eyes
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+      - name: Get PR number
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request
+              ? context.payload.pull_request.number
+              : context.payload.issue.number;
+            core.setOutput('number', prNumber);
+
+      - name: Get changed files
+        id: files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ steps.pr.outputs.number }},
+              per_page: 100
+            });
+            const filenames = files.map(f => f.filename);
+            const hasQwen3 = filenames.some(f =>
+              (f.startsWith('qwen3/') || f.startsWith('tests/qwen3/')) &&
+              !f.startsWith('qwen3_moe/') && !f.startsWith('tests/qwen3_moe/')
+            );
+            const hasQwen3Moe = filenames.some(f =>
+              f.startsWith('qwen3_moe/') || f.startsWith('tests/qwen3_moe/')
+            );
+            core.setOutput('qwen3', hasQwen3);
+            core.setOutput('qwen3_moe', hasQwen3Moe);
+
+      - name: Get current labels
+        id: labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }}
+            });
+            const names = labels.map(l => l.name);
+            core.setOutput('has_qwen3', names.includes('run-ci-qwen3'));
+            core.setOutput('has_qwen3_moe', names.includes('run-ci-qwen3-moe'));
+
+      - name: Add run-ci-qwen3 label
+        if: steps.files.outputs.qwen3 == 'true' && steps.labels.outputs.has_qwen3 != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }},
+              labels: ['run-ci-qwen3']
+            });
+
+      - name: Add run-ci-qwen3-moe label
+        if: steps.files.outputs.qwen3_moe == 'true' && steps.labels.outputs.has_qwen3_moe != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ steps.pr.outputs.number }},
+              labels: ['run-ci-qwen3-moe']
+            });

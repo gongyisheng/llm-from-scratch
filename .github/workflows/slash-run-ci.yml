@@ -17,12 +17,12 @@ jobs:
       github.event.comment.body == '/run-ci'
     runs-on: ubuntu-latest
     outputs:
-      head_sha: ${{ steps.label.outputs.head_sha }}
-      has_qwen3: ${{ steps.label.outputs.has_qwen3 }}
-      has_qwen3_moe: ${{ steps.label.outputs.has_qwen3_moe }}
+      head_sha: ${{ steps.detect.outputs.head_sha }}
+      has_qwen3: ${{ steps.detect.outputs.has_qwen3 }}
+      has_qwen3_moe: ${{ steps.detect.outputs.has_qwen3_moe }}
     steps:
-      - name: Add labels based on changed files
-        id: label
+      - name: Detect changed files
+        id: detect
         uses: actions/github-script@v7
         with:
           script: |
@@ -49,21 +49,27 @@ jobs:
               f.startsWith('qwen3_moe/') || f.startsWith('tests/qwen3_moe/')
             );
 
+            core.setOutput('has_qwen3', hasQwen3);
+            core.setOutput('has_qwen3_moe', hasQwen3Moe);
+
+      - name: Add labels to PR
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const hasQwen3 = '${{ steps.detect.outputs.has_qwen3 }}' === 'true';
+            const hasQwen3Moe = '${{ steps.detect.outputs.has_qwen3_moe }}' === 'true';
             const ciLabels = [];
             if (hasQwen3) ciLabels.push('run-ci-qwen3');
             if (hasQwen3Moe) ciLabels.push('run-ci-qwen3-moe');
-
             if (ciLabels.length > 0) {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: prNumber,
+                issue_number: context.payload.issue.number,
                 labels: ciLabels
               });
             }
-
-            core.setOutput('has_qwen3', hasQwen3);
-            core.setOutput('has_qwen3_moe', hasQwen3Moe);
 
   test-qwen3-cpu:
     needs: prepare

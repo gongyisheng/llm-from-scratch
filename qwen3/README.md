@@ -80,7 +80,7 @@ qwen3/
 └── main.py         # tie it all together
 
 tests/qwen3/
-├── test_generate.py  # integration tests (single + batch)
+├── test_knowledge.py # integration tests (single + batch)
 └── test_accuracy.py  # token-level accuracy vs HuggingFace transformers
 ```
 

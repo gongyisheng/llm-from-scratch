@@ -57,7 +57,7 @@ llm-from-scratch/
 │   └── main.py
 ├── tests/                      # tests for all models
 │   └── qwen3/
-│       └── test_generate.py
+│       └── test_knowledge.py
 └── ...                         # more models follow same structure
 ```
 

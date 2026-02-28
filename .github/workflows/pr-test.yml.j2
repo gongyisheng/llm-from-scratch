@@ -147,5 +147,5 @@ jobs:
           ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest << config.test_file >> -m slow -v --model ${{ matrix.model }} --device << config.device >>
+        run: uv run pytest << config.test_file >> -m slow -v -s --model ${{ matrix.model }} --device << config.device >>
 <% endfor %>

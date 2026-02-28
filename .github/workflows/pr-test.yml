@@ -106,7 +106,7 @@ jobs:
           ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3/test_knowledge.py -m slow -v --model ${{ matrix.model }} --device cpu
+        run: uv run pytest tests/qwen3/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cpu
 
 
   knowledge-qwen3-cuda:
@@ -141,7 +141,7 @@ jobs:
           ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3/test_knowledge.py -m slow -v --model ${{ matrix.model }} --device cuda
+        run: uv run pytest tests/qwen3/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cuda
 
 
   accuracy-qwen3-cpu:
@@ -176,7 +176,7 @@ jobs:
           ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3/test_accuracy.py -m slow -v --model ${{ matrix.model }} --device cpu
+        run: uv run pytest tests/qwen3/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cpu
 
 
   accuracy-qwen3-cuda:
@@ -211,7 +211,7 @@ jobs:
           ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3/test_accuracy.py -m slow -v --model ${{ matrix.model }} --device cuda
+        run: uv run pytest tests/qwen3/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cuda
 
 
   knowledge-qwen3-moe-cpu:
@@ -246,7 +246,7 @@ jobs:
           ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3_moe/test_knowledge.py -m slow -v --model ${{ matrix.model }} --device cpu
+        run: uv run pytest tests/qwen3_moe/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cpu
 
 
   accuracy-qwen3-moe-cpu:
@@ -281,4 +281,4 @@ jobs:
           ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3_moe/test_accuracy.py -m slow -v --model ${{ matrix.model }} --device cpu
+        run: uv run pytest tests/qwen3_moe/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cpu

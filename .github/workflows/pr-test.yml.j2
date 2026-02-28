@@ -28,6 +28,12 @@
         'family': 'qwen3',
         'device': 'cpu',
         'test_file': 'tests/qwen3/test_accuracy.py',
+        'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B', 'Qwen3-8B', 'Qwen3-14B', 'Qwen3-32B'],
+    },
+    'accuracy-qwen3-cuda': {
+        'family': 'qwen3',
+        'device': 'cuda',
+        'test_file': 'tests/qwen3/test_accuracy.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
     },
     'knowledge-qwen3-moe-cpu': {
@@ -105,6 +111,7 @@ jobs:
 <% for job_name, config in test_jobs.items() %>
 
   << job_name >>:
+    name: "<% if config.device == 'cuda' %>NVIDIA<% else %>CPU<% endif %> / << job_name | replace('-' ~ config.device, '') >> (${{ matrix.model }})"
     needs: prepare
     if: needs.prepare.outputs.has_<< config.family >> == 'true'
     runs-on: [self-hosted]

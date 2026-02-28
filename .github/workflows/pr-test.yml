@@ -70,6 +70,7 @@ jobs:
 
 
   knowledge-qwen3-cpu:
+    name: "CPU / knowledge-qwen3 (${{ matrix.model }})"
     needs: prepare
     if: needs.prepare.outputs.has_qwen3 == 'true'
     runs-on: [self-hosted]
@@ -98,6 +99,7 @@ jobs:
 
 
   knowledge-qwen3-cuda:
+    name: "NVIDIA / knowledge-qwen3 (${{ matrix.model }})"
     needs: prepare
     if: needs.prepare.outputs.has_qwen3 == 'true'
     runs-on: [self-hosted]
@@ -126,6 +128,36 @@ jobs:
 
 
   accuracy-qwen3-cpu:
+    name: "CPU / accuracy-qwen3 (${{ matrix.model }})"
+    needs: prepare
+    if: needs.prepare.outputs.has_qwen3 == 'true'
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-4B", "Qwen3-8B", "Qwen3-14B", "Qwen3-32B"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Download checkpoint
+        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest tests/qwen3/test_accuracy.py -m slow -v --model ${{ matrix.model }} --device cpu
+
+
+  accuracy-qwen3-cuda:
+    name: "NVIDIA / accuracy-qwen3 (${{ matrix.model }})"
     needs: prepare
     if: needs.prepare.outputs.has_qwen3 == 'true'
     runs-on: [self-hosted]
@@ -150,10 +182,11 @@ jobs:
         run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3/test_accuracy.py -m slow -v --model ${{ matrix.model }} --device cpu
+        run: uv run pytest tests/qwen3/test_accuracy.py -m slow -v --model ${{ matrix.model }} --device cuda
 
 
   knowledge-qwen3-moe-cpu:
+    name: "CPU / knowledge-qwen3-moe (${{ matrix.model }})"
     needs: prepare
     if: needs.prepare.outputs.has_qwen3_moe == 'true'
     runs-on: [self-hosted]
@@ -182,6 +215,7 @@ jobs:
 
 
   accuracy-qwen3-moe-cpu:
+    name: "CPU / accuracy-qwen3-moe (${{ matrix.model }})"
     needs: prepare
     if: needs.prepare.outputs.has_qwen3_moe == 'true'
     runs-on: [self-hosted]

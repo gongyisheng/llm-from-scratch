@@ -4,8 +4,8 @@
 name: PR Test
 
 on:
-  issue_comment:
-    types: [created]
+  pull_request:
+    types: [opened, synchronize]
 
 permissions:
   pull-requests: write
@@ -13,12 +13,9 @@ permissions:
 
 jobs:
   prepare:
-    if: >-
-      github.event.issue.pull_request &&
-      startsWith(github.event.comment.body, '/run-ci')
     runs-on: ubuntu-latest
     outputs:
-      head_sha: ${{ steps.detect.outputs.head_sha }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
 
       has_qwen3: ${{ steps.detect.outputs.has_qwen3 }}
       has_qwen3_moe: ${{ steps.detect.outputs.has_qwen3_moe }}
@@ -29,17 +26,10 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.issue.number,
-            });
-            core.setOutput('head_sha', pr.data.head.sha);
-
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.payload.issue.number,
+              pull_number: context.payload.pull_request.number,
               per_page: 100
             });
             const filenames = files.map(f => f.filename);
@@ -73,7 +63,7 @@ jobs:
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.payload.issue.number,
+                issue_number: context.payload.pull_request.number,
                 labels: ciLabels
               });
             }

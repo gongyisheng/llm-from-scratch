@@ -138,7 +138,13 @@ jobs:
         run: uv sync --extra test
 
       - name: Download checkpoint
-        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+        run: |
+          persistent="/media/hdddisk/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
         run: uv run pytest << config.test_file >> -m slow -v --model ${{ matrix.model }} --device << config.device >>

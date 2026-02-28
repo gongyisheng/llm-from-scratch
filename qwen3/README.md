@@ -80,7 +80,8 @@ qwen3/
 └── main.py         # tie it all together
 
 tests/qwen3/
-└── test_generate.py  # integration tests (single + batch)
+├── test_knowledge.py # integration tests (single + batch)
+└── test_accuracy.py  # token-level accuracy vs HuggingFace transformers
 ```
 
 ## Learning Guide
@@ -194,6 +195,16 @@ uv run python -m pytest tests/qwen3/ -v -m slow
 Tests require downloaded checkpoints. Runs math, knowledge, thinking mode, and batch vs. single-sequence equivalence across all three model sizes.
 
 ## Notes
+
+**Accuracy comparison fixes (bf16 precision)**: When running in bfloat16, tiny rounding differences compound across 28+ transformer layers, causing token mismatches against HuggingFace transformers. Three fixes were needed to achieve exact token-level match:
+
+1. **RMSNorm casting order** — Our original code multiplied the weight while still in float32 (`x / rms * weight` then `.to(dtype)`). HF casts the normalized value to bf16 *before* the weight multiply: `weight * x.to(dtype)`. The different rounding order accumulates across layers.
+
+2. **RoPE buffer dtype** — Our cos/sin buffers were stored in float32 but the Q/K tensors are bf16. The mixed-precision multiply `bf16 * f32` produces different results from `bf16 * bf16`. Fixed by casting buffers to model dtype when indexing: `self.cos[position_ids].to(x.dtype)`.
+
+3. **Softmax precision** — Our attention softmax operated in bf16 (`F.softmax(..., dtype=x.dtype)`). HF computes softmax in float32 for numerical stability: `F.softmax(..., dtype=torch.float32).to(x.dtype)`.
+
+The test uses `attn_implementation="eager"` when loading HF models because SDPA uses fused GPU kernels with different floating-point accumulation paths. Eager mode uses the same manual attention math as our implementation, making the comparison meaningful. Use `scripts/compare_hf.py` for layer-level diagnostics.
 
 **Weight tying vs `load_state_dict(assign=True)`**: When `tie_word_embeddings=True`, the model ties `lm_head.weight` to `tok_emb.weight` during init. However, `assign=True` replaces Parameter objects, breaking this tie. Some HuggingFace checkpoints (e.g. Qwen3-0.6B) redundantly include `lm_head.weight` so it gets loaded anyway, while others (e.g. Qwen3-4B) omit it — leaving `lm_head.weight` as an uninitialized meta tensor. Our `load_weights` detects this via `is_meta` and re-ties automatically.
 

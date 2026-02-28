@@ -5,13 +5,16 @@ name: PR Test
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [labeled, synchronize]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-test-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   pull-requests: write
-  actions: write
   contents: read
-  statuses: write
 
 jobs:
   prepare:
@@ -48,60 +51,8 @@ jobs:
             core.setOutput('has_qwen3_moe', has_qwen3_moe);
 
 
-      - name: Set pending statuses on PR
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const sha = '${{ github.event.pull_request.head.sha }}';
-            const url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const checks = [];
-
-            if ('${{ steps.detect.outputs.has_qwen3 }}' === 'true') {
-
-              checks.push('CI / test-qwen3-cpu (Qwen3-0.6B)');
-
-              checks.push('CI / test-qwen3-cpu (Qwen3-1.7B)');
-
-              checks.push('CI / test-qwen3-cpu (Qwen3-4B)');
-
-              checks.push('CI / test-qwen3-cpu (Qwen3-8B)');
-
-              checks.push('CI / test-qwen3-cpu (Qwen3-14B)');
-
-              checks.push('CI / test-qwen3-cpu (Qwen3-32B)');
-
-            }
-
-            if ('${{ steps.detect.outputs.has_qwen3 }}' === 'true') {
-
-              checks.push('CI / test-qwen3-cuda (Qwen3-0.6B)');
-
-              checks.push('CI / test-qwen3-cuda (Qwen3-1.7B)');
-
-              checks.push('CI / test-qwen3-cuda (Qwen3-4B)');
-
-            }
-
-            if ('${{ steps.detect.outputs.has_qwen3_moe }}' === 'true') {
-
-              checks.push('CI / test-qwen3-moe-cpu (Qwen3-30B-A3B)');
-
-            }
-
-            for (const name of checks) {
-              await github.rest.repos.createCommitStatus({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                sha,
-                state: 'pending',
-                context: name,
-                description: 'Queued',
-                target_url: url
-              });
-            }
-
       - name: Add labels to PR
+        if: github.event.action == 'synchronize'
         continue-on-error: true
         uses: actions/github-script@v7
         with:
@@ -124,9 +75,12 @@ jobs:
             }
 
 
-  test-qwen3-cpu:
+  knowledge-qwen3-cpu:
+    name: "CPU / knowledge-qwen3 (${{ matrix.model }})"
     needs: prepare
-    if: needs.prepare.outputs.has_qwen3 == 'true'
+    if: >-
+      needs.prepare.outputs.has_qwen3 == 'true'
+      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false
@@ -143,34 +97,27 @@ jobs:
         uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
-        run: uv sync --extra test --extra download
+        run: uv sync --extra test
 
       - name: Download checkpoint
-        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+        run: |
+          persistent="/media/ssddisk/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3/ -m slow -v --model ${{ matrix.model }} --device cpu
-
-      - name: Report status
-        if: always()
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const status = '${{ job.status }}';
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner, repo: context.repo.repo,
-              sha: '${{ needs.prepare.outputs.head_sha }}',
-              state: status === 'success' ? 'success' : 'failure',
-              context: 'CI / test-qwen3-cpu (${{ matrix.model }})',
-              description: status === 'success' ? 'Tests passed' : 'Tests failed',
-              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-            });
+        run: uv run pytest tests/qwen3/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cpu
 
 
-  test-qwen3-cuda:
+  knowledge-qwen3-cuda:
+    name: "NVIDIA / knowledge-qwen3 (${{ matrix.model }})"
     needs: prepare
-    if: needs.prepare.outputs.has_qwen3 == 'true'
+    if: >-
+      needs.prepare.outputs.has_qwen3 == 'true'
+      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false
@@ -187,34 +134,101 @@ jobs:
         uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
-        run: uv sync --extra test --extra download
+        run: uv sync --extra test
 
       - name: Download checkpoint
-        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+        run: |
+          persistent="/media/ssddisk/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3/ -m slow -v --model ${{ matrix.model }} --device cuda
-
-      - name: Report status
-        if: always()
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const status = '${{ job.status }}';
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner, repo: context.repo.repo,
-              sha: '${{ needs.prepare.outputs.head_sha }}',
-              state: status === 'success' ? 'success' : 'failure',
-              context: 'CI / test-qwen3-cuda (${{ matrix.model }})',
-              description: status === 'success' ? 'Tests passed' : 'Tests failed',
-              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-            });
+        run: uv run pytest tests/qwen3/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cuda
 
 
-  test-qwen3-moe-cpu:
+  accuracy-qwen3-cpu:
+    name: "CPU / accuracy-qwen3 (${{ matrix.model }})"
     needs: prepare
-    if: needs.prepare.outputs.has_qwen3_moe == 'true'
+    if: >-
+      needs.prepare.outputs.has_qwen3 == 'true'
+      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3')
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-4B", "Qwen3-8B", "Qwen3-14B", "Qwen3-32B"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Download checkpoint
+        run: |
+          persistent="/media/ssddisk/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest tests/qwen3/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cpu
+
+
+  accuracy-qwen3-cuda:
+    name: "NVIDIA / accuracy-qwen3 (${{ matrix.model }})"
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.has_qwen3 == 'true'
+      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3')
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-4B"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Download checkpoint
+        run: |
+          persistent="/media/ssddisk/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest tests/qwen3/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cuda
+
+
+  knowledge-qwen3-moe-cpu:
+    name: "CPU / knowledge-qwen3-moe (${{ matrix.model }})"
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.has_qwen3_moe == 'true'
+      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3-moe')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false
@@ -231,26 +245,53 @@ jobs:
         uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
-        run: uv sync --extra test --extra download
+        run: uv sync --extra test
 
       - name: Download checkpoint
-        run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
+        run: |
+          persistent="/media/ssddisk/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest tests/qwen3_moe/ -m slow -v --model ${{ matrix.model }} --device cpu
+        run: uv run pytest tests/qwen3_moe/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cpu
 
-      - name: Report status
-        if: always()
-        continue-on-error: true
-        uses: actions/github-script@v7
+
+  accuracy-qwen3-moe-cpu:
+    name: "CPU / accuracy-qwen3-moe (${{ matrix.model }})"
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.has_qwen3_moe == 'true'
+      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3-moe')
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["Qwen3-30B-A3B"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
         with:
-          script: |
-            const status = '${{ job.status }}';
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner, repo: context.repo.repo,
-              sha: '${{ needs.prepare.outputs.head_sha }}',
-              state: status === 'success' ? 'success' : 'failure',
-              context: 'CI / test-qwen3-moe-cpu (${{ matrix.model }})',
-              description: status === 'success' ? 'Tests passed' : 'Tests failed',
-              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-            });
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Download checkpoint
+        run: |
+          persistent="/media/ssddisk/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest tests/qwen3_moe/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cpu

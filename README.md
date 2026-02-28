@@ -42,8 +42,9 @@ uv run python -m qwen3.main -m Qwen3-4B -p "Explain quantum computing"  # pick m
 llm-from-scratch/
 ├── pyproject.toml              # shared dependencies
 ├── README.md
-├── scripts/                    # download scripts
-│   └── download.sh
+├── scripts/
+│   ├── download.sh             # download model checkpoints
+│   └── compare_hf.py           # layer-by-layer accuracy diff: scratch vs HuggingFace eager
 ├── checkpoints/                # model weights (gitignored)
 ├── qwen3/                      # Qwen3 implementation
 │   ├── README.md
@@ -56,7 +57,7 @@ llm-from-scratch/
 │   └── main.py
 ├── tests/                      # tests for all models
 │   └── qwen3/
-│       └── test_generate.py
+│       └── test_knowledge.py
 └── ...                         # more models follow same structure
 ```
 

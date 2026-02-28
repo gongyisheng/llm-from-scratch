@@ -142,7 +142,7 @@ jobs:
 
       - name: Download checkpoint
         run: |
-          persistent="/media/hdddisk/huggingface/${{ matrix.model }}"
+          persistent="/media/ssddisk/huggingface/${{ matrix.model }}"
           if [ ! -f "$persistent/config.json" ]; then
             uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
           fi

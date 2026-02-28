@@ -57,6 +57,10 @@ on:
     types: [labeled, synchronize]
   workflow_dispatch:
 
+concurrency:
+  group: pr-test-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   pull-requests: write
   contents: read

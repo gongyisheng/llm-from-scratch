@@ -1,4 +1,5 @@
 import gc
+import re
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,13 @@ from qwen3_moe.main import load_model, run_inference
 from qwen3_moe.generate import generate, generate_batch
 
 CHECKPOINTS_DIR = Path(__file__).resolve().parent.parent.parent / "checkpoints"
+
+
+def extract_answer(text: str) -> str:
+    # extract assistant response after last <|im_start|>assistant, strip thinking
+    m = re.search(r"<\|im_start\|>assistant\n(.*?)(?:<\|im_end\|>|$)", text, flags=re.DOTALL)
+    content = m.group(1) if m else text
+    return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
 
 def checkpoint_available(model_name: str) -> bool:
@@ -53,8 +61,13 @@ def test_math(model_name, device):
     if not checkpoint_available(model_name):
         pytest.skip(f"Checkpoint {model_name} not downloaded")
 
-    output = infer(model_name, device, "What is 2+2? Reply with just the number.")
-    assert "4" in output, f"Expected '4' in output, got: {output}"
+    prompt = "What is 2+2? Reply with just the number."
+    output = infer(model_name, device, prompt)
+    answer = extract_answer(output)
+    print(f"\n  Prompt: {prompt!r}")
+    print(f"  Output: {output!r}")
+    print(f"  Answer: {answer!r}")
+    assert "4" in answer, f"Expected '4' in answer, got: {answer}"
 
 
 @slow
@@ -62,10 +75,13 @@ def test_knowledge(model_name, device):
     if not checkpoint_available(model_name):
         pytest.skip(f"Checkpoint {model_name} not downloaded")
 
-    output = infer(
-        model_name, device, "What is the capital of France? Reply with just the city name."
-    )
-    assert "Paris" in output, f"Expected 'Paris' in output, got: {output}"
+    prompt = "What is the capital of France? Reply with just the city name."
+    output = infer(model_name, device, prompt)
+    answer = extract_answer(output)
+    print(f"\n  Prompt: {prompt!r}")
+    print(f"  Output: {output!r}")
+    print(f"  Answer: {answer!r}")
+    assert "Paris" in answer, f"Expected 'Paris' in answer, got: {answer}"
 
 
 @slow
@@ -73,8 +89,13 @@ def test_comparison(model_name, device):
     if not checkpoint_available(model_name):
         pytest.skip(f"Checkpoint {model_name} not downloaded")
 
-    output = infer(model_name, device, "Which is bigger, 9.11 or 9.9? Reply with just the number.")
-    assert "9.9" in output, f"Expected '9.9' in output, got: {output}"
+    prompt = "Which is bigger, 9.11 or 9.9? Reply with just the number."
+    output = infer(model_name, device, prompt)
+    answer = extract_answer(output)
+    print(f"\n  Prompt: {prompt!r}")
+    print(f"  Output: {output!r}")
+    print(f"  Answer: {answer!r}")
+    assert "9.9" in answer, f"Expected '9.9' in answer, got: {answer}"
 
 
 @slow
@@ -82,12 +103,14 @@ def test_thinking_mode(model_name, device):
     if not checkpoint_available(model_name):
         pytest.skip(f"Checkpoint {model_name} not downloaded")
 
-    output = infer(
-        model_name, device,
-        "What is 2+2? Reply with just the number.",
-    )
+    prompt = "What is 2+2? Reply with just the number."
+    output = infer(model_name, device, prompt)
+    answer = extract_answer(output)
+    print(f"\n  Prompt: {prompt!r}")
+    print(f"  Output: {output!r}")
+    print(f"  Answer: {answer!r}")
     assert "<think>" in output, f"Expected '<think>' in output, got: {output}"
-    assert "4" in output, f"Expected '4' in output, got: {output}"
+    assert "4" in answer, f"Expected '4' in answer, got: {answer}"
 
 
 @slow
@@ -131,6 +154,10 @@ def test_batch(model_name, device):
     # --- verify batch outputs are correct ---
     for i, prompt in enumerate(prompts):
         text = tokenizer.decode(batch_outputs[i])
-        assert expected[i] in text, (
-            f"Prompt {i}: expected '{expected[i]}' in batch output, got: {text}"
+        answer = extract_answer(text)
+        print(f"\n  Prompt: {prompt!r}")
+        print(f"  Output: {text!r}")
+        print(f"  Answer: {answer!r}")
+        assert expected[i] in answer, (
+            f"Prompt {i}: expected '{expected[i]}' in batch answer, got: {answer}"
         )

@@ -112,24 +112,28 @@ def test_accuracy(model_name, device):
                 scratch_model, hf["prompt_ids"], MAX_NEW_TOKENS,
             )
 
-            if hf["tokens"] != scratch_tokens:
+            diffs = [abs(hf["logprobs"][s] - scratch_lps[s]) for s in range(MAX_NEW_TOKENS)]
+            string_match = hf["tokens"] == scratch_tokens
+
+            print(f"\n===Prompt[{i}]: {prompt!r}===")
+            print(f"  Max LogProb Diff: {max(diffs):.6f}")
+            print(f"  Mean LogProb Diff: {sum(diffs)/len(diffs):.6f}")
+            print(f"  String Match: {'YES' if string_match else 'NO'}")
+            print(f"  HF:      {hf_tokenizer.decode(hf['tokens'])!r}")
+            print(f"  Scratch: {hf_tokenizer.decode(scratch_tokens)!r}")
+
+            if not string_match:
                 mismatches.append(
                     f"Token mismatch for '{prompt}':\n"
                     f"  HF:      {hf_tokenizer.decode(hf['tokens'])!r}\n"
                     f"  Scratch: {hf_tokenizer.decode(scratch_tokens)!r}"
                 )
-                continue
-
-            max_diff = max(abs(hf["logprobs"][s] - scratch_lps[s]) for s in range(MAX_NEW_TOKENS))
-            print(f"  '{prompt}': max logprob diff={max_diff:.6f}")
-            for step in range(MAX_NEW_TOKENS):
-                diff = abs(hf["logprobs"][step] - scratch_lps[step])
-                if diff >= LOGPROB_ATOL:
-                    mismatches.append(
-                        f"Logprob diff at step {step} for '{prompt}': "
-                        f"HF={hf['logprobs'][step]:.6f}, Scratch={scratch_lps[step]:.6f}, "
-                        f"diff={diff:.6f}"
-                    )
-                    break
+            elif max(diffs) >= LOGPROB_ATOL:
+                worst = max(range(MAX_NEW_TOKENS), key=lambda s: diffs[s])
+                mismatches.append(
+                    f"Logprob diff at step {worst} for '{prompt}': "
+                    f"HF={hf['logprobs'][worst]:.6f}, Scratch={scratch_lps[worst]:.6f}, "
+                    f"diff={diffs[worst]:.6f}"
+                )
 
     assert not mismatches, "\n".join(mismatches)

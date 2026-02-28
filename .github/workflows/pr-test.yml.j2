@@ -96,6 +96,7 @@ jobs:
 <% endfor %>
 
       - name: Add labels to PR
+        if: github.event.action == 'synchronize'
         continue-on-error: true
         uses: actions/github-script@v7
         with:
@@ -118,7 +119,9 @@ jobs:
   << job_name >>:
     name: "<% if config.device == 'cuda' %>NVIDIA<% else %>CPU<% endif %> / << job_name | replace('-' ~ config.device, '') >> (${{ matrix.model }})"
     needs: prepare
-    if: needs.prepare.outputs.has_<< config.family >> == 'true'
+    if: >-
+      needs.prepare.outputs.has_<< config.family >> == 'true'
+      || (github.event.action == 'labeled' && github.event.label.name == '<< model_families[config.family].label >>')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false

@@ -12,22 +12,34 @@
 } -%>
 
 <%- set test_jobs = {
-    'test-qwen3-cpu': {
+    'knowledge-qwen3-cpu': {
         'family': 'qwen3',
         'device': 'cpu',
-        'test_dir': 'tests/qwen3/',
+        'test_file': 'tests/qwen3/test_knowledge.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B', 'Qwen3-8B', 'Qwen3-14B', 'Qwen3-32B'],
     },
-    'test-qwen3-cuda': {
+    'knowledge-qwen3-cuda': {
         'family': 'qwen3',
         'device': 'cuda',
-        'test_dir': 'tests/qwen3/',
+        'test_file': 'tests/qwen3/test_knowledge.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
     },
-    'test-qwen3-moe-cpu': {
+    'accuracy-qwen3-cpu': {
+        'family': 'qwen3',
+        'device': 'cpu',
+        'test_file': 'tests/qwen3/test_accuracy.py',
+        'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
+    },
+    'knowledge-qwen3-moe-cpu': {
         'family': 'qwen3_moe',
         'device': 'cpu',
-        'test_dir': 'tests/qwen3_moe/',
+        'test_file': 'tests/qwen3_moe/test_knowledge.py',
+        'models': ['Qwen3-30B-A3B'],
+    },
+    'accuracy-qwen3-moe-cpu': {
+        'family': 'qwen3_moe',
+        'device': 'cpu',
+        'test_file': 'tests/qwen3_moe/test_accuracy.py',
         'models': ['Qwen3-30B-A3B'],
     },
 } -%>
@@ -40,9 +52,7 @@ on:
 
 permissions:
   pull-requests: write
-  actions: write
   contents: read
-  statuses: write
 
 jobs:
   prepare:
@@ -73,33 +83,6 @@ jobs:
             );
             core.setOutput('has_<< name >>', has_<< name >>);
 <% endfor %>
-
-      - name: Set pending statuses on PR
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const sha = '${{ github.event.pull_request.head.sha }}';
-            const url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const checks = [];
-<% for job_name, config in test_jobs.items() %>
-            if ('${{ steps.detect.outputs.has_<< config.family >> }}' === 'true') {
-<% for model in config.models %>
-              checks.push('CI / << job_name >> (<< model >>)');
-<% endfor %>
-            }
-<% endfor %>
-            for (const name of checks) {
-              await github.rest.repos.createCommitStatus({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                sha,
-                state: 'pending',
-                context: name,
-                description: 'Queued',
-                target_url: url
-              });
-            }
 
       - name: Add labels to PR
         continue-on-error: true
@@ -146,21 +129,5 @@ jobs:
         run: uv run bash scripts/download.sh Qwen/${{ matrix.model }}
 
       - name: Run tests
-        run: uv run pytest << config.test_dir >> -m slow -v --model ${{ matrix.model }} --device << config.device >>
-
-      - name: Report status
-        if: always()
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const status = '${{ job.status }}';
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner, repo: context.repo.repo,
-              sha: '${{ needs.prepare.outputs.head_sha }}',
-              state: status === 'success' ? 'success' : 'failure',
-              context: 'CI / << job_name >> (${{ matrix.model }})',
-              description: status === 'success' ? 'Tests passed' : 'Tests failed',
-              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-            });
+        run: uv run pytest << config.test_file >> -m slow -v --model ${{ matrix.model }} --device << config.device >>
 <% endfor %>

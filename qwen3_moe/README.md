@@ -272,3 +272,5 @@ This is a 30B parameter model (~61GB in bf16). Options:
 ## Dependencies
 
 Managed by [uv](https://docs.astral.sh/uv/). Dependencies are declared in the root `pyproject.toml` and installed automatically on `uv run`.
+
+**Note:** The accuracy tests pin `transformers>=4.51,<5`. Transformers 5.x refactored MoE experts into fused 3D weight tensors (`gate_up_proj`), changing the floating-point computation order. This produces numerically different bfloat16 results even though the math is equivalent, causing the token-level accuracy comparison to fail. Our per-expert implementation matches transformers 4.x exactly.

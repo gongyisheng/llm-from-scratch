@@ -117,7 +117,7 @@ jobs:
 <% for job_name, config in test_jobs.items() %>
 
   << job_name >>:
-    name: "<% if config.device == 'cuda' %>NVIDIA<% else %>CPU<% endif %> / << job_name | replace('-' ~ config.device, '') >> (${{ matrix.model }})"
+    name: "<% if config.device == 'cuda' %>NVIDIA<% else %>CPU<% endif %> / << job_name | replace('-' ~ config.device, '') >>"
     needs: prepare
     if: >-
       needs.prepare.outputs.has_<< config.family >> == 'true'

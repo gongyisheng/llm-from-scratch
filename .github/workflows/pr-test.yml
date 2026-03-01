@@ -76,7 +76,7 @@ jobs:
 
 
   knowledge-qwen3-dense-cpu:
-    name: "CPU / knowledge-qwen3-dense (${{ matrix.model }})"
+    name: "CPU / knowledge-qwen3-dense"
     needs: prepare
     if: >-
       needs.prepare.outputs.has_qwen3_dense == 'true'
@@ -113,7 +113,7 @@ jobs:
 
 
   knowledge-qwen3-dense-cuda:
-    name: "NVIDIA / knowledge-qwen3-dense (${{ matrix.model }})"
+    name: "NVIDIA / knowledge-qwen3-dense"
     needs: prepare
     if: >-
       needs.prepare.outputs.has_qwen3_dense == 'true'
@@ -150,7 +150,7 @@ jobs:
 
 
   accuracy-qwen3-dense-cpu:
-    name: "CPU / accuracy-qwen3-dense (${{ matrix.model }})"
+    name: "CPU / accuracy-qwen3-dense"
     needs: prepare
     if: >-
       needs.prepare.outputs.has_qwen3_dense == 'true'
@@ -187,7 +187,7 @@ jobs:
 
 
   accuracy-qwen3-dense-cuda:
-    name: "NVIDIA / accuracy-qwen3-dense (${{ matrix.model }})"
+    name: "NVIDIA / accuracy-qwen3-dense"
     needs: prepare
     if: >-
       needs.prepare.outputs.has_qwen3_dense == 'true'
@@ -224,7 +224,7 @@ jobs:
 
 
   knowledge-qwen3-moe-cpu:
-    name: "CPU / knowledge-qwen3-moe (${{ matrix.model }})"
+    name: "CPU / knowledge-qwen3-moe"
     needs: prepare
     if: >-
       needs.prepare.outputs.has_qwen3_moe == 'true'
@@ -261,7 +261,7 @@ jobs:
 
 
   accuracy-qwen3-moe-cpu:
-    name: "CPU / accuracy-qwen3-moe (${{ matrix.model }})"
+    name: "CPU / accuracy-qwen3-moe"
     needs: prepare
     if: >-
       needs.prepare.outputs.has_qwen3_moe == 'true'

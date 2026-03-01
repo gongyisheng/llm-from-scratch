@@ -158,7 +158,7 @@ class SparseMoEBlock(nn.Module):
         # routing_weights: (num_tokens, n_experts_per_token)
         # selected_experts: (num_tokens, n_experts_per_token)
 
-        output = torch.empty_like(hidden_states)  # (num_tokens, emb_dim)
+        output = torch.zeros_like(hidden_states)  # (num_tokens, emb_dim)
 
         for expert_idx in range(self.n_experts):
             # find which tokens selected this expert
@@ -170,8 +170,8 @@ class SparseMoEBlock(nn.Module):
             expert_output = self.experts[expert_idx](hidden_states[token_idx])
 
             # weight by routing score and accumulate
-            weights = routing_weights[token_idx, slot_idx].unsqueeze(-1)
-            output[token_idx] += expert_output * weights
+            weighted_output = routing_weights[token_idx, slot_idx].unsqueeze(-1)
+            output[token_idx] += expert_output * weighted_output
 
         return output.view(batch, seq_len, emb_dim)
 

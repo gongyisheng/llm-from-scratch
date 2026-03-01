@@ -22,7 +22,7 @@ jobs:
     outputs:
       head_sha: ${{ github.event.pull_request.head.sha }}
 
-      has_qwen3: ${{ steps.detect.outputs.has_qwen3 }}
+      has_qwen3_dense: ${{ steps.detect.outputs.has_qwen3_dense }}
       has_qwen3_moe: ${{ steps.detect.outputs.has_qwen3_moe }}
 
     steps:
@@ -39,11 +39,11 @@ jobs:
             });
             const filenames = files.map(f => f.filename);
 
-            const has_qwen3 = filenames.some(f =>
+            const has_qwen3_dense = filenames.some(f =>
               ["qwen3/", "tests/qwen3/"].some(d => f.startsWith(d)) &&
               !["qwen3_moe/", "tests/qwen3_moe/"].some(d => f.startsWith(d))
             );
-            core.setOutput('has_qwen3', has_qwen3);
+            core.setOutput('has_qwen3_dense', has_qwen3_dense);
 
             const has_qwen3_moe = filenames.some(f =>
               ["qwen3_moe/", "tests/qwen3_moe/"].some(d => f.startsWith(d))
@@ -59,8 +59,8 @@ jobs:
           script: |
             const ciLabels = [];
 
-            if ('${{ steps.detect.outputs.has_qwen3 }}' === 'true')
-              ciLabels.push('run-ci-qwen3');
+            if ('${{ steps.detect.outputs.has_qwen3_dense }}' === 'true')
+              ciLabels.push('run-ci-qwen3-dense');
 
             if ('${{ steps.detect.outputs.has_qwen3_moe }}' === 'true')
               ciLabels.push('run-ci-qwen3-moe');
@@ -75,12 +75,12 @@ jobs:
             }
 
 
-  knowledge-qwen3-cpu:
-    name: "CPU / knowledge-qwen3 (${{ matrix.model }})"
+  knowledge-qwen3-dense-cpu:
+    name: "CPU / knowledge-qwen3-dense (${{ matrix.model }})"
     needs: prepare
     if: >-
-      needs.prepare.outputs.has_qwen3 == 'true'
-      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3')
+      needs.prepare.outputs.has_qwen3_dense == 'true'
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-qwen3-dense')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false
@@ -112,12 +112,12 @@ jobs:
         run: uv run pytest tests/qwen3/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cpu
 
 
-  knowledge-qwen3-cuda:
-    name: "NVIDIA / knowledge-qwen3 (${{ matrix.model }})"
+  knowledge-qwen3-dense-cuda:
+    name: "NVIDIA / knowledge-qwen3-dense (${{ matrix.model }})"
     needs: prepare
     if: >-
-      needs.prepare.outputs.has_qwen3 == 'true'
-      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3')
+      needs.prepare.outputs.has_qwen3_dense == 'true'
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-qwen3-dense')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false
@@ -149,12 +149,12 @@ jobs:
         run: uv run pytest tests/qwen3/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cuda
 
 
-  accuracy-qwen3-cpu:
-    name: "CPU / accuracy-qwen3 (${{ matrix.model }})"
+  accuracy-qwen3-dense-cpu:
+    name: "CPU / accuracy-qwen3-dense (${{ matrix.model }})"
     needs: prepare
     if: >-
-      needs.prepare.outputs.has_qwen3 == 'true'
-      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3')
+      needs.prepare.outputs.has_qwen3_dense == 'true'
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-qwen3-dense')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false
@@ -186,12 +186,12 @@ jobs:
         run: uv run pytest tests/qwen3/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cpu
 
 
-  accuracy-qwen3-cuda:
-    name: "NVIDIA / accuracy-qwen3 (${{ matrix.model }})"
+  accuracy-qwen3-dense-cuda:
+    name: "NVIDIA / accuracy-qwen3-dense (${{ matrix.model }})"
     needs: prepare
     if: >-
-      needs.prepare.outputs.has_qwen3 == 'true'
-      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3')
+      needs.prepare.outputs.has_qwen3_dense == 'true'
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-qwen3-dense')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false
@@ -228,7 +228,7 @@ jobs:
     needs: prepare
     if: >-
       needs.prepare.outputs.has_qwen3_moe == 'true'
-      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3-moe')
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-qwen3-moe')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false
@@ -265,7 +265,7 @@ jobs:
     needs: prepare
     if: >-
       needs.prepare.outputs.has_qwen3_moe == 'true'
-      || (github.event.action == 'labeled' && github.event.label.name == 'run-ci-qwen3-moe')
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-qwen3-moe')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false

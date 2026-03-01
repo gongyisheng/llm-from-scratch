@@ -1,6 +1,6 @@
 <%- set model_families = {
-    'qwen3': {
-        'label': 'run-ci-qwen3',
+    'qwen3_dense': {
+        'label': 'run-ci-qwen3-dense',
         'src_dirs': ['qwen3/', 'tests/qwen3/'],
         'exclude_dirs': ['qwen3_moe/', 'tests/qwen3_moe/'],
     },
@@ -12,26 +12,26 @@
 } -%>
 
 <%- set test_jobs = {
-    'knowledge-qwen3-cpu': {
-        'family': 'qwen3',
+    'knowledge-qwen3-dense-cpu': {
+        'family': 'qwen3_dense',
         'device': 'cpu',
         'test_file': 'tests/qwen3/test_knowledge.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B', 'Qwen3-8B', 'Qwen3-14B', 'Qwen3-32B'],
     },
-    'knowledge-qwen3-cuda': {
-        'family': 'qwen3',
+    'knowledge-qwen3-dense-cuda': {
+        'family': 'qwen3_dense',
         'device': 'cuda',
         'test_file': 'tests/qwen3/test_knowledge.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
     },
-    'accuracy-qwen3-cpu': {
-        'family': 'qwen3',
+    'accuracy-qwen3-dense-cpu': {
+        'family': 'qwen3_dense',
         'device': 'cpu',
         'test_file': 'tests/qwen3/test_accuracy.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B', 'Qwen3-8B', 'Qwen3-14B', 'Qwen3-32B'],
     },
-    'accuracy-qwen3-cuda': {
-        'family': 'qwen3',
+    'accuracy-qwen3-dense-cuda': {
+        'family': 'qwen3_dense',
         'device': 'cuda',
         'test_file': 'tests/qwen3/test_accuracy.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
@@ -121,7 +121,7 @@ jobs:
     needs: prepare
     if: >-
       needs.prepare.outputs.has_<< config.family >> == 'true'
-      || (github.event.action == 'labeled' && github.event.label.name == '<< model_families[config.family].label >>')
+      || contains(github.event.pull_request.labels.*.name, '<< model_families[config.family].label >>')
     runs-on: [self-hosted]
     strategy:
       fail-fast: false

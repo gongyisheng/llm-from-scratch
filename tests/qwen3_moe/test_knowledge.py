@@ -40,7 +40,7 @@ def get_model(model_name: str, device: str):
     model_dir = CHECKPOINTS_DIR / model_name
     t0 = time.perf_counter()
     result = load_model(model_dir, device=device)
-    print(f"\n  Model load: {time.perf_counter() - t0:.2f}s")
+    print(f"\n  Load Model: {time.perf_counter() - t0:.2f}s")
 
     _model_cache[cache_key] = result
     return result
@@ -53,7 +53,7 @@ def infer(model_name: str, device: str, prompt: str, **kwargs):
         model, tokenizer, config, prompt,
         max_tokens=4096, temperature=0, enable_thinking=True, **kwargs,
     )
-    print(f"  Inference: {time.perf_counter() - t0:.2f}s")
+    print(f"\n  Inference: {time.perf_counter() - t0:.2f}s")
     return result
 
 

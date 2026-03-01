@@ -94,7 +94,7 @@ def test_accuracy(model_name, device):
     ).to(device)
     hf_model.requires_grad_(False)
     t_hf_load = time.perf_counter() - t0
-    print(f"  Load: {t_hf_load:.2f}s")
+    print(f"\n  Load Model: {t_hf_load:.2f}s")
 
     hf_results = []
     t0 = time.perf_counter()
@@ -104,7 +104,7 @@ def test_accuracy(model_name, device):
             tokens, lps = hf_greedy_decode(hf_model, prompt_ids, MAX_NEW_TOKENS)
             hf_results.append({"prompt_ids": prompt_ids, "tokens": tokens, "logprobs": lps})
     t_hf_infer = time.perf_counter() - t0
-    print(f"  Inference: {t_hf_infer:.2f}s")
+    print(f"\n  Inference: {t_hf_infer:.2f}s")
 
     del hf_model
     gc.collect()

@@ -234,6 +234,7 @@ dependencies = [
 test = [
     { name = "huggingface-hub" },
     { name = "pytest" },
+    { name = "tqdm" },
     { name = "transformers" },
 ]
 
@@ -247,6 +248,7 @@ requires-dist = [
     { name = "tiktoken" },
     { name = "tokenizers" },
     { name = "torch" },
+    { name = "tqdm", marker = "extra == 'test'" },
     { name = "transformers", marker = "extra == 'test'", specifier = ">=4.51,<5" },
 ]
 provides-extras = ["test"]

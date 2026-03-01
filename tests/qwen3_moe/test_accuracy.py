@@ -52,10 +52,17 @@ def hf_greedy_decode(model, prompt_ids, max_new_tokens):
 def scratch_greedy_decode(model, prompt_ids, max_new_tokens):
     """Greedy decode with scratch from-scratch model."""
     device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
     input_ids = torch.tensor([prompt_ids], device=device)
-    position_ids = torch.arange(len(prompt_ids), device=device).unsqueeze(0)
+    prompt_len = len(prompt_ids)
+    position_ids = torch.arange(prompt_len, device=device).unsqueeze(0)
 
-    logits, cache = model(input_ids, position_ids)
+    causal_mask = torch.triu(
+        torch.ones(prompt_len, prompt_len, device=device, dtype=torch.bool), diagonal=1
+    )
+    attn_mask = torch.where(causal_mask, float("-inf"), 0.0)[None, None].to(dtype)
+
+    logits, cache = model(input_ids, position_ids, attn_mask=attn_mask)
     last = logits[0, -1, :]
     nid = torch.argmax(last).item()
     tokens = [nid]
@@ -92,7 +99,7 @@ def test_accuracy(model_name, device):
     ).to(device)
     hf_model.requires_grad_(False)
     t_hf_load = time.perf_counter() - t0
-    print(f"  Load: {t_hf_load:.2f}s")
+    print(f"\n  Load Model: {t_hf_load:.2f}s")
 
     hf_results = []
     t0 = time.perf_counter()
@@ -102,7 +109,7 @@ def test_accuracy(model_name, device):
             tokens, lps = hf_greedy_decode(hf_model, prompt_ids, MAX_NEW_TOKENS)
             hf_results.append({"prompt_ids": prompt_ids, "tokens": tokens, "logprobs": lps})
     t_hf_infer = time.perf_counter() - t0
-    print(f"  Inference: {t_hf_infer:.2f}s")
+    print(f"\n  Inference: {t_hf_infer:.2f}s")
 
     del hf_model
     gc.collect()

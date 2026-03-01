@@ -64,7 +64,6 @@ def load_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None)
     if hasattr(model, "lm_head") and hasattr(model, "tok_emb"):
         if model.lm_head.weight.is_meta and not model.tok_emb.weight.is_meta:
             model.lm_head.weight = model.tok_emb.weight
-    print(f"loaded {loaded} weights")
 
 
 if __name__ == "__main__":

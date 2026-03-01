@@ -92,12 +92,7 @@ class GroupQueryAttention(nn.Module):
 
         scores = Q @ K.transpose(-2, -1) / (self.head_dim ** 0.5) # (batch, n_heads, seq_len, total_seq_len)
         if attn_mask is not None:
-            # prefill
-            scores += attn_mask
-        elif kv_cache is None:
-            # single sequence
-            mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
-            scores.masked_fill_(mask, float("-inf"))  # fill -inf to make it's 0 after softmax
+            scores = scores + attn_mask
         attn = F.softmax(scores, dim=-1, dtype=torch.float32).to(x.dtype)
         context = attn @ V
 

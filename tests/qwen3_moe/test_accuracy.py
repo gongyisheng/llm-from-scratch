@@ -52,10 +52,17 @@ def hf_greedy_decode(model, prompt_ids, max_new_tokens):
 def scratch_greedy_decode(model, prompt_ids, max_new_tokens):
     """Greedy decode with scratch from-scratch model."""
     device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
     input_ids = torch.tensor([prompt_ids], device=device)
-    position_ids = torch.arange(len(prompt_ids), device=device).unsqueeze(0)
+    prompt_len = len(prompt_ids)
+    position_ids = torch.arange(prompt_len, device=device).unsqueeze(0)
 
-    logits, cache = model(input_ids, position_ids)
+    causal_mask = torch.triu(
+        torch.ones(prompt_len, prompt_len, device=device, dtype=torch.bool), diagonal=1
+    )
+    attn_mask = torch.where(causal_mask, float("-inf"), 0.0)[None, None].to(dtype)
+
+    logits, cache = model(input_ids, position_ids, attn_mask=attn_mask)
     last = logits[0, -1, :]
     nid = torch.argmax(last).item()
     tokens = [nid]

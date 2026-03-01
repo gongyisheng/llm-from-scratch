@@ -1,5 +1,6 @@
 import gc
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -37,7 +38,9 @@ def get_model(model_name: str, device: str):
     gc.collect()
 
     model_dir = CHECKPOINTS_DIR / model_name
+    t0 = time.perf_counter()
     result = load_model(model_dir, device=device)
+    print(f"\n  Model load: {time.perf_counter() - t0:.2f}s")
 
     _model_cache[cache_key] = result
     return result
@@ -45,10 +48,13 @@ def get_model(model_name: str, device: str):
 
 def infer(model_name: str, device: str, prompt: str, **kwargs):
     model, tokenizer, config = get_model(model_name, device)
-    return run_inference(
+    t0 = time.perf_counter()
+    result = run_inference(
         model, tokenizer, config, prompt,
         max_tokens=4096, temperature=0, enable_thinking=True, **kwargs,
     )
+    print(f"  Inference: {time.perf_counter() - t0:.2f}s")
+    return result
 
 
 # --- Tests ---

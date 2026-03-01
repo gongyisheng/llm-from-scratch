@@ -8,7 +8,7 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.emb_dim = emb_dim
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(self.emb_dim))
+        self.weight = nn.Parameter(torch.empty(self.emb_dim))
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_dtype = x.dtype
@@ -80,17 +80,17 @@ class RoPE(nn.Module):
 
 
 class GroupQueryAttention(nn.Module):
-    def __init__(self, emb_dim: int, head_dim: int, n_heads: int, n_kv_groups: int, layer_idx: int, sliding_window: int):
+    def __init__(self, emb_dim: int, n_heads: int, n_kv_groups: int, head_dim: int, layer_idx: int, sliding_window: int):
         super().__init__()
         self.emb_dim = emb_dim
-        self.head_dim = head_dim
         self.n_heads = n_heads
         self.n_kv_groups = n_kv_groups
+        self.head_dim = head_dim
         self.layer_idx = layer_idx
         self.sliding_window = sliding_window
         self.group_size = n_heads // n_kv_groups
 
-        self.sinks = nn.Parameter(torch.zeros(1, n_heads, 1, 1))
+        self.sinks = nn.Parameter(torch.empty(1, n_heads, 1, 1))
         self.qkv_proj = nn.Linear(self.emb_dim, (self.n_heads + 2 * self.n_kv_groups) * self.head_dim, bias=True)
         self.out = nn.Linear(self.head_dim * self.n_heads, self.emb_dim, bias=True)
     
@@ -159,9 +159,92 @@ class SwiGLUFFN(nn.Module):
         return output
 
 
-class MoEGate(nn.Module):
-    def __init__(self, emb_dim: int ):
+class MoERouter(nn.Module):
+    def __init__(self, emb_dim: int, n_experts: int, n_experts_per_token: int, moe_norm_topk_prob: bool):
         super().__init__()
+        self.emb_dim = emb_dim
+        self.n_experts = n_experts
+        self.n_experts_per_token = n_experts_per_token
+        self.moe_norm_topk_prob = moe_norm_topk_prob
+        self.proj = nn.Linear(self.emb_dim, self.n_experts, bias=True)
     
-    def forward(self, x: torch.Tensor):
-        pass
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # x.shape: (batch, seq_len, emb_dim)
+        router_scores = self.proj(x)
+        values, indices = torch.topk(router_scores, self.n_experts_per_token)
+        if self.moe_norm_topk_prob:
+            values = F.softmax(values, dim=-1)
+        return values, indices
+
+
+class SparseMoEBlock(nn.Module):
+    def __init__(self, emb_dim: int, n_experts: int, n_experts_per_token: int, moe_hidden_dim: int, moe_norm_topk_prob: bool):
+        super().__init__()
+        self.emb_dim = emb_dim
+        self.n_experts = n_experts
+        self.n_experts_per_token = n_experts_per_token
+        self.moe_hidden_dim = moe_hidden_dim
+        self.moe_norm_topk_prob = moe_norm_topk_prob
+
+        self.router = MoERouter(self.emb_dim, self.n_experts, self.n_experts_per_token, self.moe_norm_topk_prob)
+        self.activation = SwiGLUFFN()
+        self.gate_up_proj_weight = nn.Parameter(torch.empty(self.n_experts, self.moe_hidden_dim * 2, self.emb_dim)) # fused layer
+        self.gate_up_proj_bias = nn.Parameter(torch.empty(self.n_experts, self.moe_hidden_dim * 2))
+        self.down_proj_weight = nn.Parameter(torch.empty(self.n_experts, self.emb_dim, self.moe_hidden_dim))
+        self.down_proj_bias = nn.Parameter(torch.empty(self.n_experts, self.emb_dim))
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch, seq_len, emb_dim = x.shape
+        hidden_state = x.view(-1, emb_dim)
+
+        routing_weights, selected_experts = self.router(hidden_state)
+        output = torch.zeros_like(hidden_state)
+
+        for expert_idx in range(self.n_experts):
+            token_idx, slot_idx = torch.where(selected_experts == expert_idx)
+            if token_idx.numel() == 0:
+                continue
+            
+            tokens = hidden_state[token_idx]
+            expert_output = F.linear(tokens, self.gate_up_proj_weight[expert_idx], self.gate_up_proj_bias[expert_idx])
+            expert_output = self.activation(expert_output)
+            expert_output = F.linear(expert_output, self.down_proj_weight[expert_idx], self.down_proj_bias[expert_idx])
+            
+            weighted_output = expert_output * routing_weights[token_idx, slot_idx].unsqueeze(-1)
+            output[token_idx] += weighted_output
+        
+        return output.view(batch, seq_len, emb_dim)
+
+
+class MoETransformersBlock(nn.Module):
+    def __init__(self, emb_dim: int, n_heads: int, n_kv_groups: int, head_dim: int, layer_idx: int, sliding_window: int, n_experts: int, n_experts_per_token: int, moe_hidden_dim: int, moe_norm_topk_prob: bool):
+        super().__init__()
+        self.emb_dim = emb_dim
+        self.n_heads = n_heads
+        self.n_kv_groups = n_kv_groups
+        self.head_dim = head_dim
+        self.layer_idx = layer_idx
+        self.sliding_window = sliding_window
+        self.n_experts = n_experts
+        self.n_experts_per_token = n_experts_per_token
+        self.moe_hidden_dim = moe_hidden_dim
+        self.moe_norm_topk_prob = moe_norm_topk_prob
+
+        self.norm1 = RMSNorm(emb_dim)
+        self.norm2 = RMSNorm(emb_dim)
+
+        self.attn = GroupQueryAttention(self.emb_dim, self.n_heads, self.n_kv_groups, self.head_dim, self.layer_idx, self.sliding_window)
+        self.moe_ffn = SparseMoEBlock(self.emb_dim, self.n_experts, self.n_experts_per_token, self.moe_hidden_dim, self.moe_norm_topk_prob)
+    
+    def forward(self, x, rope, position_ids, kv_cache=None, attn_mask=None):
+        residual = x
+        x = self.norm1(x)
+        x, new_kv_cache = self.attn(x, rope, position_ids, kv_cache, attn_mask)
+        x = x + residual
+
+        residual = x
+        x = self.norm2(x)
+        x = self.moe_ffn(x)
+        x = x + residual
+
+        return x, new_kv_cache

@@ -39,7 +39,12 @@ def generate(
 
     # prefill
     position_ids = torch.arange(prompt_len, device=device).unsqueeze(0)
-    logits, kv_cache = model(input_ids, position_ids)
+    dtype = next(model.parameters()).dtype
+    causal_mask = torch.triu(
+        torch.ones(prompt_len, prompt_len, device=device, dtype=torch.bool), diagonal=1
+    )
+    attn_mask = torch.where(causal_mask, float("-inf"), 0.0)[None, None].to(dtype)
+    logits, kv_cache = model(input_ids, position_ids, attn_mask=attn_mask)
     next_token = sample(logits[:, -1, :], temperature=temperature, top_k=top_k)
     generated = [next_token.item()]
 

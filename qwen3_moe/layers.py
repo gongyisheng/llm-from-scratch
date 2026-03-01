@@ -7,7 +7,7 @@ class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
+        self.weight = nn.Parameter(torch.empty(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dtype = x.dtype
@@ -117,7 +117,7 @@ class SwiGLUFFN(nn.Module):
         return output
 
 
-class MoEGate(nn.Module):
+class MoERouter(nn.Module):
     def __init__(self, emb_dim: int, n_experts: int, n_experts_per_token: int, moe_norm_topk_prob: bool):
         super().__init__()
         self.emb_dim = emb_dim
@@ -147,18 +147,18 @@ class SparseMoEBlock(nn.Module):
         self.experts = nn.ModuleList([
             SwiGLUFFN(self.emb_dim, self.moe_hidden_dim) for _ in range(n_experts)
         ])
-        self.gate = MoEGate(self.emb_dim, self.n_experts, self.n_experts_per_token, self.moe_norm_topk_prob)
+        self.router = MoERouter(self.emb_dim, self.n_experts, self.n_experts_per_token, self.moe_norm_topk_prob)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x.shape: (batch, seq_len, emb_dim)
         batch, seq_len, emb_dim = x.shape
         hidden_states = x.view(-1, emb_dim)  # (num_tokens, emb_dim)
 
-        routing_weights, selected_experts = self.gate(hidden_states)
+        routing_weights, selected_experts = self.router(hidden_states)
         # routing_weights: (num_tokens, n_experts_per_token)
         # selected_experts: (num_tokens, n_experts_per_token)
 
-        output = torch.zeros_like(hidden_states)  # (num_tokens, emb_dim)
+        output = torch.empty_like(hidden_states)  # (num_tokens, emb_dim)
 
         for expert_idx in range(self.n_experts):
             # find which tokens selected this expert

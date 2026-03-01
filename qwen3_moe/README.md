@@ -48,14 +48,14 @@ TransformerBlock:                    MoETransformersBlock:
   RMSNorm → GQA → residual            RMSNorm → GQA → residual           (same)
   RMSNorm → SwiGLU FFN → residual     RMSNorm → SparseMoEBlock → residual  (CHANGED)
                                               │
-                                              ├── MoEGate: picks 8 of 128 experts
+                                              ├── MoERouter: picks 8 of 128 experts
                                               └── 128 × small SwiGLU experts
 ```
 
 Only 3 things change:
 1. **Config** — 4 new MoE fields (`n_experts`, `n_experts_per_token`, `moe_hidden_dim`, `moe_norm_topk_prob`)
-2. **FFN replacement** — `SwiGLUFFN` → `SparseMoEBlock` (gate + 128 experts)
-3. **Weight mapping** — new keys for gate and expert weights
+2. **FFN replacement** — `SwiGLUFFN` → `SparseMoEBlock` (router + 128 experts)
+3. **Weight mapping** — new keys for router and expert weights
 
 Everything else (RMSNorm, RoPE, GQA, tokenizer, generation loop) is identical to Qwen3.
 
@@ -69,7 +69,7 @@ Token IDs → Embedding → [48 × MoE Transformer Block] → RMSNorm → LM Hea
                               ├── RMSNorm
                               └── SparseMoEBlock + Residual
                                     │
-                                    ├── MoEGate → top-8 of 128 experts
+                                    ├── MoERouter → top-8 of 128 experts
                                     └── 128 × SwiGLUFFN (small)
 ```
 
@@ -100,7 +100,7 @@ The core idea: instead of one large FFN processing every token, route each token
 Token hidden state (2048-dim)
         │
         ▼
-┌─── MoEGate ────┐
+┌─── MoERouter ────┐
 │ Linear(2048, 128) ← produces 128 scores, one per expert
 │ Top-8 selection   ← pick 8 highest-scoring experts
 │ Softmax over 8    ← normalize weights to sum to 1
@@ -134,9 +134,9 @@ Why it works: 128 experts × 768 intermediate = 98,304 total capacity, but only 
 qwen3_moe/
 ├── config.py       # Step 1: config dataclass with MoE fields
 ├── tokenizer.py    # (reused from qwen3, identical)
-├── layers.py       # Steps 2-4: all layers (RMSNorm, RoPE, GQA, SwiGLUFFN, MoEGate, SparseMoEBlock, MoETransformersBlock)
+├── layers.py       # Steps 2-4: all layers (RMSNorm, RoPE, GQA, SwiGLUFFN, MoERouter, SparseMoEBlock, MoETransformersBlock)
 ├── model.py        # Step 5: full model assembly
-├── weights.py      # Step 6: weight mapping for gate + experts
+├── weights.py      # Step 6: weight mapping for router + experts
 ├── generate.py     # Step 7: generation loop (same logic as qwen3)
 └── main.py         # CLI entry point
 ```
@@ -166,12 +166,12 @@ Copy or import these unchanged from Qwen3: `RMSNorm`, `RoPE`, `GroupQueryAttenti
 
 The `SwiGLUFFN` class is reused as-is for each expert — the only difference is the intermediate dimension (`768` instead of `3072`).
 
-### Step 3: MoE Gate (`layers.py`)
+### Step 3: MoE Router (`layers.py`)
 
-The gate decides which experts process each token. This is the key new component.
+The router decides which experts process each token. This is the key new component.
 
 ```python
-class MoEGate(nn.Module):
+class MoERouter(nn.Module):
     # proj: Linear(emb_dim, n_experts, bias=False)
     # i.e., Linear(2048, 128)
 ```
@@ -187,18 +187,18 @@ Returns: `routing_weights (num_tokens, 8)` and `selected_experts (num_tokens, 8)
 
 ### Step 4: SparseMoEBlock (`layers.py`)
 
-Combines the gate with 128 expert FFNs. This replaces the single dense `SwiGLUFFN`.
+Combines the router with 128 expert FFNs. This replaces the single dense `SwiGLUFFN`.
 
 ```python
 class SparseMoEBlock(nn.Module):
-    # gate: MoEGate
+    # router: MoERouter
     # experts: ModuleList of 128 SwiGLUFFN(emb_dim=2048, moe_hidden_dim=768)
 ```
 
 Forward logic — the **loop-over-experts approach**:
 ```
 1. Flatten input: (batch, seq, hidden) → (num_tokens, hidden)
-2. Get routing: weights, expert_indices = gate(hidden_states)
+2. Get routing: weights, expert_indices = router(hidden_states)
 3. Allocate output: zeros_like(hidden_states)
 4. For each expert_idx in 0..127:
      - torch.where(selected_experts == expert_idx) → find routed tokens
@@ -227,8 +227,8 @@ norm2 → SparseMoEBlock → residual  (FFN replaced with MoE)
 HuggingFace weight names → your model's state dict. Same attention/norm mappings as Qwen3, plus:
 
 ```
-# MoE gate (one per layer):
-model.layers.{i}.mlp.gate.weight → layers.{i}.moe_ffn.gate.proj.weight
+# MoE router (one per layer):
+model.layers.{i}.mlp.gate.weight → layers.{i}.moe_ffn.router.proj.weight
 
 # MoE experts (128 per layer, 3 matrices each):
 model.layers.{i}.mlp.experts.{j}.gate_proj.weight → layers.{i}.moe_ffn.experts.{j}.gate_proj.weight
@@ -236,7 +236,7 @@ model.layers.{i}.mlp.experts.{j}.up_proj.weight   → layers.{i}.moe_ffn.experts
 model.layers.{i}.mlp.experts.{j}.down_proj.weight  → layers.{i}.moe_ffn.experts.{j}.down_proj.weight
 ```
 
-The expert weights just need `mlp.experts.` → `moe_ffn.experts.` prefix replacement. The gate requires mapping `mlp.gate.weight` → `moe_ffn.gate.proj.weight`.
+The expert weights just need `mlp.experts.` → `moe_ffn.experts.` prefix replacement. The router requires mapping `mlp.gate.weight` → `moe_ffn.router.proj.weight`.
 
 ### Step 7: Generation Loop (`generate.py`)
 
@@ -255,10 +255,10 @@ This is a 30B parameter model (~61GB in bf16). Options:
 |---|---|---|
 | FFN per layer | 1 large SwiGLU (3072 hidden) | 128 small SwiGLU (768 hidden each) |
 | Active params/token | All | ~3B of 30B |
-| New modules | — | MoEGate, SparseMoEBlock |
+| New modules | — | MoERouter, SparseMoEBlock |
 | Layers | 28 | 48 |
 | Attention | GQA (16q/8kv) | GQA (32q/4kv) |
-| Weight count per layer | 3 FFN matrices | 1 gate + 128×3 expert matrices |
+| Weight count per layer | 3 FFN matrices | 1 router + 128×3 expert matrices |
 | `tie_word_embeddings` | true | false |
 
 ## References

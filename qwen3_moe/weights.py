@@ -19,7 +19,7 @@ LAYER_KEY_MAP = {
     "self_attn.o_proj.weight": "attn.o_proj.weight",
     "self_attn.q_norm.weight": "attn.q_norm.weight",
     "self_attn.k_norm.weight": "attn.k_norm.weight",
-    "mlp.gate.weight": "moe_ffn.gate.proj.weight",
+    "mlp.gate.weight": "moe_ffn.router.proj.weight",
 }
 
 
@@ -34,7 +34,7 @@ def rename_hf_key(hf_key: str) -> str | None:
     layer_idx = parts[2]
     hf_suffix = parts[3]
 
-    # simple layer mappings (attention, norms, gate)
+    # simple layer mappings (attention, norms, router)
     if hf_suffix in LAYER_KEY_MAP:
         return f"layers.{layer_idx}.{LAYER_KEY_MAP[hf_suffix]}"
 

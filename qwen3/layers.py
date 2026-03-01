@@ -9,7 +9,7 @@ class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-6):
         super().__init__()
         self.dim = dim
-        self.weight = nn.Parameter(torch.ones(dim))
+        self.weight = nn.Parameter(torch.empty(dim))
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

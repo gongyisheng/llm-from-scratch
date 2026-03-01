@@ -133,7 +133,7 @@ def test_accuracy(model_name, device):
     print(f"  Inference: {t_scratch_infer:.2f}s")
 
     # Step 3: Compare
-    print(f"\n[Step 3/3] Comparing results")
+    print("\n[Step 3/3] Comparing results")
 
     mismatches = []
     for i, prompt in enumerate(PROMPTS):
@@ -165,7 +165,7 @@ def test_accuracy(model_name, device):
             )
 
     # Timing summary
-    print(f"\n  Timing summary:")
+    print("\n  Timing summary:")
     print(f"    HF      — load: {t_hf_load:.2f}s, inference: {t_hf_infer:.2f}s")
     print(f"    Scratch — load: {t_scratch_load:.2f}s, inference: {t_scratch_infer:.2f}s")
 

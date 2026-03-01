@@ -1,10 +1,12 @@
 """Token-level accuracy: greedy decode must match HuggingFace transformers."""
 
 import gc
+import time
 from pathlib import Path
 
 import pytest
 import torch
+from tqdm import tqdm
 
 CHECKPOINTS_DIR = Path(__file__).resolve().parent.parent.parent / "checkpoints"
 
@@ -80,60 +82,89 @@ def test_accuracy(model_name, device):
 
     model_dir = CHECKPOINTS_DIR / model_name
 
-    # Phase 1: HF baseline (generate, then free memory)
+    # Step 1: HF baseline
+    print(f"\n[Step 1/3] HF model ({model_name}, {device})")
+
+    t0 = time.perf_counter()
     hf_tokenizer = transformers.AutoTokenizer.from_pretrained(str(model_dir))
     hf_model = transformers.AutoModelForCausalLM.from_pretrained(
         str(model_dir), dtype=torch.bfloat16, attn_implementation="eager",
     ).to(device)
     hf_model.requires_grad_(False)
+    t_hf_load = time.perf_counter() - t0
+    print(f"  Load: {t_hf_load:.2f}s")
 
     hf_results = []
+    t0 = time.perf_counter()
     with torch.no_grad():
-        for prompt in PROMPTS:
+        for prompt in tqdm(PROMPTS, desc="  HF inference"):
             prompt_ids = hf_tokenizer.encode(prompt)
             tokens, lps = hf_greedy_decode(hf_model, prompt_ids, MAX_NEW_TOKENS)
             hf_results.append({"prompt_ids": prompt_ids, "tokens": tokens, "logprobs": lps})
+    t_hf_infer = time.perf_counter() - t0
+    print(f"  Inference: {t_hf_infer:.2f}s")
 
     del hf_model
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Phase 2: scratch model
+    # Step 2: Scratch model
+    print(f"\n[Step 2/3] Scratch model ({model_name}, {device})")
+
     from qwen3_moe.main import load_model
 
+    t0 = time.perf_counter()
     scratch_model, _, _ = load_model(model_dir, device=device)
+    t_scratch_load = time.perf_counter() - t0
+    print(f"  Load: {t_scratch_load:.2f}s")
 
-    mismatches = []
+    scratch_results = []
+    t0 = time.perf_counter()
     with torch.no_grad():
-        for i, prompt in enumerate(PROMPTS):
-            hf = hf_results[i]
-            scratch_tokens, scratch_lps = scratch_greedy_decode(
+        for hf in tqdm(hf_results, desc="  Scratch inference"):
+            tokens, lps = scratch_greedy_decode(
                 scratch_model, hf["prompt_ids"], MAX_NEW_TOKENS,
             )
+            scratch_results.append({"tokens": tokens, "logprobs": lps})
+    t_scratch_infer = time.perf_counter() - t0
+    print(f"  Inference: {t_scratch_infer:.2f}s")
 
-            diffs = [abs(hf["logprobs"][s] - scratch_lps[s]) for s in range(MAX_NEW_TOKENS)]
-            string_match = hf["tokens"] == scratch_tokens
+    # Step 3: Compare
+    print("\n[Step 3/3] Comparing results")
 
-            print(f"\n===Prompt[{i}]: {prompt!r}===")
-            print(f"  Max LogProb Diff: {max(diffs):.6f}")
-            print(f"  Mean LogProb Diff: {sum(diffs)/len(diffs):.6f}")
-            print(f"  String Match: {'YES' if string_match else 'NO'}")
-            print(f"  HF:      {hf_tokenizer.decode(hf['tokens'])!r}")
-            print(f"  Scratch: {hf_tokenizer.decode(scratch_tokens)!r}")
+    mismatches = []
+    for i, prompt in enumerate(PROMPTS):
+        hf = hf_results[i]
+        scratch = scratch_results[i]
 
-            if not string_match:
-                mismatches.append(
-                    f"Token mismatch for '{prompt}':\n"
-                    f"  HF:      {hf_tokenizer.decode(hf['tokens'])!r}\n"
-                    f"  Scratch: {hf_tokenizer.decode(scratch_tokens)!r}"
-                )
-            elif max(diffs) >= LOGPROB_ATOL:
-                worst = max(range(MAX_NEW_TOKENS), key=lambda s: diffs[s])
-                mismatches.append(
-                    f"Logprob diff at step {worst} for '{prompt}': "
-                    f"HF={hf['logprobs'][worst]:.6f}, Scratch={scratch_lps[worst]:.6f}, "
-                    f"diff={diffs[worst]:.6f}"
-                )
+        diffs = [abs(hf["logprobs"][s] - scratch["logprobs"][s]) for s in range(MAX_NEW_TOKENS)]
+        string_match = hf["tokens"] == scratch["tokens"]
+
+        print(f"\n  Prompt[{i}]: {prompt!r}")
+        print(f"    Max LogProb Diff: {max(diffs):.6f}")
+        print(f"    Mean LogProb Diff: {sum(diffs)/len(diffs):.6f}")
+        print(f"    String Match: {'YES' if string_match else 'NO'}")
+        print(f"    HF:      {hf_tokenizer.decode(hf['tokens'])!r}")
+        print(f"    Scratch: {hf_tokenizer.decode(scratch['tokens'])!r}")
+
+        if not string_match:
+            mismatches.append(
+                f"Token mismatch for '{prompt}':\n"
+                f"  HF:      {hf_tokenizer.decode(hf['tokens'])!r}\n"
+                f"  Scratch: {hf_tokenizer.decode(scratch['tokens'])!r}"
+            )
+        elif max(diffs) >= LOGPROB_ATOL:
+            worst = max(range(MAX_NEW_TOKENS), key=lambda s: diffs[s])
+            mismatches.append(
+                f"Logprob diff at step {worst} for '{prompt}': "
+                f"HF={hf['logprobs'][worst]:.6f}, Scratch={scratch['logprobs'][worst]:.6f}, "
+                f"diff={diffs[worst]:.6f}"
+            )
+
+    # Timing summary
+    print("\n  Timing summary:")
+    print(f"    HF      — load: {t_hf_load:.2f}s, inference: {t_hf_infer:.2f}s")
+    print(f"    Scratch — load: {t_scratch_load:.2f}s, inference: {t_scratch_infer:.2f}s")
 
     assert not mismatches, "\n".join(mismatches)

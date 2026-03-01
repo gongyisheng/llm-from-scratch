@@ -2,7 +2,7 @@ name: Auto Label
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened]
   issue_comment:
     types: [created]
 
@@ -42,14 +42,14 @@ jobs:
               per_page: 100
             });
             const filenames = files.map(f => f.filename);
-            const hasQwen3 = filenames.some(f =>
+            const hasQwen3Dense = filenames.some(f =>
               (f.startsWith('qwen3/') || f.startsWith('tests/qwen3/')) &&
               !f.startsWith('qwen3_moe/') && !f.startsWith('tests/qwen3_moe/')
             );
             const hasQwen3Moe = filenames.some(f =>
               f.startsWith('qwen3_moe/') || f.startsWith('tests/qwen3_moe/')
             );
-            core.setOutput('qwen3', hasQwen3);
+            core.setOutput('qwen3_dense', hasQwen3Dense);
             core.setOutput('qwen3_moe', hasQwen3Moe);
 
       - name: Add labels
@@ -57,11 +57,11 @@ jobs:
         with:
           script: |
             const prNumber = ${{ steps.pr.outputs.number }};
-            const hasQwen3 = '${{ steps.files.outputs.qwen3 }}' === 'true';
+            const hasQwen3Dense = '${{ steps.files.outputs.qwen3_dense }}' === 'true';
             const hasQwen3Moe = '${{ steps.files.outputs.qwen3_moe }}' === 'true';
 
             const ciLabels = [];
-            if (hasQwen3) ciLabels.push('run-ci-qwen3');
+            if (hasQwen3Dense) ciLabels.push('run-ci-qwen3-dense');
             if (hasQwen3Moe) ciLabels.push('run-ci-qwen3-moe');
 
             if (ciLabels.length > 0) {

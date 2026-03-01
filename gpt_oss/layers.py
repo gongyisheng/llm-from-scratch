@@ -91,19 +91,22 @@ class GroupQueryAttention(nn.Module):
         self.group_size = n_heads // n_kv_groups
 
         self.sinks = nn.Parameter(torch.zeros(1, n_heads, 1, 1))
-        self.q_proj = nn.Linear(self.emb_dim, self.head_dim * self.n_heads, bias=True)
-        self.k_proj = nn.Linear(self.emb_dim, self.head_dim * self.n_kv_groups, bias=True)
-        self.v_proj = nn.Linear(self.emb_dim, self.head_dim * self.n_kv_groups, bias=True)
-        self.o_proj = nn.Linear(self.head_dim * self.n_heads, self.emb_dim, bias=True)
+        self.qkv_proj = nn.Linear(self.emb_dim, (self.n_heads + 2 * self.n_kv_groups) * self.head_dim, bias=True)
+        self.out = nn.Linear(self.head_dim * self.n_heads, self.emb_dim, bias=True)
     
     def forward(self, x: torch.Tensor, rope: RoPE, position_ids: torch.Tensor, kv_cache=None, attn_mask=None) -> torch.Tensor:
         # x.shape: (batch, seq_len, emb_dim)
         batch, seq_len, _ = x.shape
         
-        # reshape
-        Q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        K = self.k_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
-        V = self.v_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
+        # get fused qkv, split by head
+        QKV = self.qkv_proj(x).view(batch, seq_len, (self.n_heads + 2*self.n_kv_groups), self.head_dim)
+        
+        # split QKV, reshape
+        Q, K, V = torch.split(QKV, [self.n_heads, self.n_kv_groups, self.n_kv_groups], dim=2)
+
+        Q = Q.view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        K = K.view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
+        V = V.view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
 
         # apply rope
         Q = rope(Q, position_ids)
@@ -121,27 +124,24 @@ class GroupQueryAttention(nn.Module):
         scores = Q @ K.transpose(-2, -1) / self.head_dim ** 0.5
         if attn_mask is not None:
             scores += attn_mask
-        elif kv_cache is None:
-            mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
-            scores.masked_fill_(mask, float("-inf"))
         
         # sliding windown mask on even layer
-        _, _, full_seq_len, _ = scores.shape
-        if self.layer_idx % 2 == 0 and full_seq_len > self.sliding_window:
-            mask = torch.tril(torch.ones(full_seq_len, full_seq_len, device=x.device), diagonal=-self.sliding_window).bool()
+        _, _, q_len, kv_len = scores.shape
+        if self.layer_idx % 2 == 0 and kv_len > self.sliding_window:
+            mask = torch.tril(torch.ones(q_len, kv_len, device=x.device), diagonal=-self.sliding_window).bool()
             scores.masked_fill_(mask, float("-inf"))
         
         # attn sink
         # 1, n_head, 1, 1
         # batch, n_head, seq_len, seq_len
-        sinks = self.sinks.expand(batch, -1, full_seq_len, -1)
+        sinks = self.sinks.expand(batch, -1, q_len, -1)
         scores = torch.concat([sinks, scores], dim=-1)
         attn = F.softmax(scores, dim=-1, dtype=x.dtype)
         attn = attn[:, :, :, 1:]
 
         context = attn @ V
         context = context.transpose(1, 2).reshape(batch, seq_len, -1)
-        output = self.o_proj(context)
+        output = self.out(context)
         return output, new_kv_cache
 
 

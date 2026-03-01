@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import json
 import math
 import sys
 from pathlib import Path
@@ -36,6 +37,32 @@ def fmt_size(n):
     return str(n)
 
 
+def get_quant_method(model_dir):
+    """Read quantization method from config.json if present."""
+    config_path = model_dir / "config.json"
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+        qconfig = config.get("quantization_config", {})
+        return qconfig.get("quant_method")
+    return None
+
+
+def effective_params(name, numel, quant_method):
+    """Return the effective parameter count, adjusting for quantization packing.
+
+    MxFP4 stores 2 FP4 values per U8 byte in _blocks tensors, so the raw
+    element count is half the actual parameter count.  _scales tensors are
+    quantization metadata and do not represent original model parameters.
+    """
+    if quant_method == "mxfp4":
+        if name.endswith("_blocks"):
+            return numel * 2
+        if name.endswith("_scales"):
+            return 0
+    return numel
+
+
 def main():
     args = parse_args()
     model_dir = CHECKPOINTS_DIR / args.model
@@ -45,7 +72,12 @@ def main():
         print(f"No .safetensors files found in {model_dir}")
         sys.exit(1)
 
-    print(f"Inspecting {len(safetensor_files)} safetensors file(s) in {model_dir}\n")
+    quant_method = get_quant_method(model_dir)
+
+    print(f"Inspecting {len(safetensor_files)} safetensors file(s) in {model_dir}")
+    if quant_method:
+        print(f"Quantization: {quant_method}")
+    print()
 
     # Collect all tensors across shards
     tensors = {}
@@ -65,9 +97,10 @@ def main():
             continue
         shape, dtype = tensors[name]
         numel = math.prod(shape)
-        total_params += numel
+        params = effective_params(name, numel, quant_method)
+        total_params += params
         count += 1
-        print(f"{name:<60s} {str(list(shape)):<16s} {fmt_size(numel):>16s} {dtype}")
+        print(f"{name:<60s} {str(list(shape)):<16s} {fmt_size(params):>16s} {dtype}")
 
     print("-" * 115)
     print(f"{'Total':<60s} {'':<16s} {fmt_size(total_params):>16s}")

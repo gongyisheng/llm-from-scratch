@@ -2,7 +2,9 @@
 
 A from-scratch PyTorch implementation of Qwen3-MoE (Mixture of Experts) inference. Builds on the [Qwen3 dense implementation](../qwen3/README.md) — same attention, tokenizer, and generation loop, but replaces the dense FFN with sparse expert routing.
 
-Target model: [Qwen3-30B-A3B](https://huggingface.co/Qwen/Qwen3-30B-A3B) — 30B total params, ~3B active per token.
+Target model: [Qwen3-30B-A3B](https://huggingface.co/Qwen/Qwen3-30B-A3B)
+
+No `transformers` library — just raw tensor operations. Read [blog post](https://blog.yellowday.day/posts/qwen3_moe_from_scratch/) for details behind.
 
 ## Quick Start
 
@@ -38,26 +40,6 @@ uv run python -m qwen3_moe.main --thinking -p "Which one is bigger? 9.9 or 9.11"
 | `-d`, `--device` | `cuda`, `cpu`, or `auto` | `auto` |
 
 If a checkpoint is missing, you'll be prompted to download it automatically (requires `huggingface_hub`).
-
-## What Changes from Qwen3 Dense to MoE
-
-```
-Qwen3 Dense                          Qwen3 MoE
-─────────────                        ─────────────
-TransformerBlock:                    MoETransformersBlock:
-  RMSNorm → GQA → residual            RMSNorm → GQA → residual           (same)
-  RMSNorm → SwiGLU FFN → residual     RMSNorm → SparseMoEBlock → residual  (CHANGED)
-                                              │
-                                              ├── MoERouter: picks 8 of 128 experts
-                                              └── 128 × small SwiGLU experts
-```
-
-Only 3 things change:
-1. **Config** — 4 new MoE fields (`n_experts`, `n_experts_per_token`, `moe_hidden_dim`, `moe_norm_topk_prob`)
-2. **FFN replacement** — `SwiGLUFFN` → `SparseMoEBlock` (router + 128 experts)
-3. **Weight mapping** — new keys for router and expert weights
-
-Everything else (RMSNorm, RoPE, GQA, tokenizer, generation loop) is identical to Qwen3.
 
 ## Architecture Overview
 

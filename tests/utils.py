@@ -13,10 +13,19 @@ def checkpoint_available(model_name: str) -> bool:
 
 
 def extract_answer(text: str) -> str:
-    # extract assistant response after last <|im_start|>assistant, strip thinking
+    # Qwen3 format: <|im_start|>assistant\n...<|im_end|>
     m = re.search(r"<\|im_start\|>assistant\n(.*?)(?:<\|im_end\|>|$)", text, flags=re.DOTALL)
-    content = m.group(1) if m else text
-    return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    if m:
+        content = m.group(1)
+        return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+    # GPT-OSS format: <|channel|>final<|message|>...<|return|>
+    m = re.search(r"<\|channel\|>final<\|message\|>(.*?)(?:<\|return\|>|<\|end\|>|$)", text, flags=re.DOTALL)
+    if m:
+        return m.group(1).strip()
+
+    # Fallback: return full text
+    return text.strip()
 
 
 # Cache one model at a time to avoid GPU OOM when testing multiple models

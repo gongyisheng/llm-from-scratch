@@ -125,10 +125,11 @@ def run_inference(
     max_tokens=1024,
     temperature=1.0,
     top_k=-1,
+    **kwargs,
 ):
     """Run inference and return decoded output text."""
     messages = [{"role": "user", "content": prompt}]
-    formatted = tokenizer.apply_chat_template(messages)
+    formatted = tokenizer.apply_chat_template(messages, **kwargs)
     token_ids = tokenizer.encode(formatted)
 
     with torch.no_grad():

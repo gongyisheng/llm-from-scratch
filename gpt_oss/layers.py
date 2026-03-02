@@ -225,9 +225,9 @@ class SparseMoEBlock(nn.Module):
                 continue
             
             tokens = hidden_state[token_idx]
-            expert_output = tokens @ self.gate_up_proj_weight[expert_idx].T.contiguous() + self.gate_up_proj_bias[expert_idx]
+            expert_output = F.linear(tokens, self.gate_up_proj_weight[expert_idx], self.gate_up_proj_bias[expert_idx])
             expert_output = self.activation(expert_output)
-            expert_output = expert_output @ self.down_proj_weight[expert_idx].T.contiguous() + self.down_proj_bias[expert_idx]
+            expert_output = F.linear(expert_output, self.down_proj_weight[expert_idx], self.down_proj_bias[expert_idx])
             
             weighted_output = expert_output * routing_weights[token_idx, slot_idx].unsqueeze(-1)
             output[token_idx] += weighted_output

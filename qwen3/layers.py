@@ -59,17 +59,16 @@ class RoPE(nn.Module):
 class SwiGLUFFN(nn.Module):
     def __init__(self, emb_dim, hidden_dim):
         super().__init__()
-        self.W_gate = nn.Linear(emb_dim, hidden_dim, bias=False)
-        self.W_up = nn.Linear(emb_dim, hidden_dim, bias=False)
-        self.W_down = nn.Linear(hidden_dim, emb_dim, bias=False)
+        self.gate_proj = nn.Linear(emb_dim, hidden_dim, bias=False)
+        self.up_proj = nn.Linear(emb_dim, hidden_dim, bias=False)
+        self.down_proj = nn.Linear(hidden_dim, emb_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x.shape: (batch, seq_len, emb_dim)
-        x_gate_proj = self.W_gate(x)
-        x_up_proj = self.W_up(x)
+        gate = F.silu(self.gate_proj(x))
         # silu is x * torch.sigmoid(x) conceptually
         # all element-wise operation here
-        output = self.W_down(F.silu(x_gate_proj) * x_up_proj)
+        output = self.down_proj(gate * self.up_proj(x))
         return output
 
 
@@ -81,10 +80,10 @@ class GroupQueryAttention(nn.Module):
         self.n_kv_groups = n_kv_groups
         self.head_dim = head_dim
 
-        self.W_q = nn.Linear(self.emb_dim, self.n_heads * self.head_dim, bias=False)
-        self.W_k = nn.Linear(self.emb_dim, self.n_kv_groups * self.head_dim, bias=False)
-        self.W_v = nn.Linear(self.emb_dim, self.n_kv_groups * self.head_dim, bias=False)
-        self.W_o = nn.Linear(self.n_heads * self.head_dim, self.emb_dim, bias=False)
+        self.q_proj = nn.Linear(self.emb_dim, self.n_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(self.emb_dim, self.n_kv_groups * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(self.emb_dim, self.n_kv_groups * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.n_heads * self.head_dim, self.emb_dim, bias=False)
 
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
@@ -101,9 +100,9 @@ class GroupQueryAttention(nn.Module):
         batch, seq_len, _ = x.shape
 
         # projection + reshape to [batch, heads, seq, head_dim]
-        Q = self.W_q(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        K = self.W_k(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
-        V = self.W_v(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
+        Q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        K = self.k_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
+        V = self.v_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
 
         # Q/K norm (reshape to [batch*heads, seq, head_dim] for RMSNorm, then back)
         # attention logits can explode, need norm
@@ -137,7 +136,7 @@ class GroupQueryAttention(nn.Module):
         context = attn @ V
 
         context = context.transpose(1, 2).reshape(batch, seq_len, -1)
-        output = self.W_o(context)
+        output = self.o_proj(context)
         return output, new_kv_cache
 
 

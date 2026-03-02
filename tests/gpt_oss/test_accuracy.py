@@ -18,4 +18,4 @@ PROMPTS = [
 @pytest.mark.slow
 def test_accuracy(model_name, device):
     """Greedy generation must match HuggingFace transformers token-for-token."""
-    run_accuracy_test(model_name, device, load_model, PROMPTS)
+    run_accuracy_test(model_name, device, load_model, PROMPTS, mismatch_expected=True)

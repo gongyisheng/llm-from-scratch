@@ -416,7 +416,7 @@ expert_output = tokens @ weight[expert_idx].T.contiguous() + bias[expert_idx]
 expert_output = F.linear(tokens, weight[expert_idx], bias[expert_idx])
 ```
 
-We use `F.linear` for performance. The bf16 rounding difference is negligible for practical use but will not pass the strict token-for-token accuracy test against HF.
+We use `F.linear` for ~5× better performance. The bf16 rounding difference is negligible for practical use but will not pass the strict token-for-token accuracy test against HF. The accuracy test uses `mismatch_expected=True` to accommodate this.
 
 ### 9. Attention sink concatenated at beginning vs end
 

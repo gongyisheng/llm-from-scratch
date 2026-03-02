@@ -6,6 +6,7 @@ name: PR Test
 on:
   pull_request:
     types: [opened, labeled, synchronize]
+    paths: ['**/*.py']
   workflow_dispatch:
 
 concurrency:

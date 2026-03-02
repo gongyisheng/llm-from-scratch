@@ -51,7 +51,7 @@ def infer(model_name: str, device: str, prompt: str, load_model_fn, run_inferenc
     t0 = time.perf_counter()
     result = run_inference_fn(
         model, tokenizer, config, prompt,
-        max_tokens=4096, temperature=0, enable_thinking=True, **kwargs,
+        max_tokens=1024, temperature=0, enable_thinking=True, **kwargs,
     )
     print(f"\n  Inference: {time.perf_counter() - t0:.2f}s")
     return result

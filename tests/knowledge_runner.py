@@ -40,7 +40,7 @@ def run_batch_test(model_name, device, prompts, expected, load_model_fn, generat
         batch_outputs = generate_batch_fn(
             model,
             all_token_ids,
-            max_new_tokens=4096,
+            max_new_tokens=1024,
             temperature=0,
             eos_token_id=config.eos_token_id,
             pad_token_id=tokenizer.pad_token_id,

@@ -8,10 +8,12 @@ from tests.accuracy_runner import run_accuracy_test
 
 PROMPTS = [
     "The capital of France is",
-    "1 + 1 =",
+    "What is 4453 + 6073?",
     "def fibonacci(n):",
     "The largest planet in our solar system is",
     "Once upon a time, there was a",
+    "Write a one-sentence story about a calm ninja in the ocean.",
+    "Reverse the following security code: KRONNFW ->",
 ]
 
 

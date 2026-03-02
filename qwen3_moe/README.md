@@ -33,7 +33,7 @@ uv run python -m qwen3_moe.main --thinking -p "Which one is bigger? 9.9 or 9.11"
 | `-p`, `--prompt` | User prompt text | `Which is bigger, 9.9 or 9.11?` |
 | `-t`, `--temperature` | Sampling temperature (0 = greedy) | `1.0` |
 | `-k`, `--top-k` | Top-k filtering (-1 = disabled) | `-1` |
-| `-n`, `--max-tokens` | Max new tokens to generate | `4096` |
+| `-n`, `--max-tokens` | Max new tokens to generate | `1024` |
 | `--thinking` | Enable thinking mode | off |
 | `-d`, `--device` | `cuda`, `cpu`, or `auto` | `auto` |
 

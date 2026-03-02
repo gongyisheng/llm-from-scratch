@@ -51,8 +51,8 @@ def parse_args():
         "-n",
         "--max-tokens",
         type=int,
-        default=4096,
-        help="max new tokens to generate (default: 4096)",
+        default=1024,
+        help="max new tokens to generate (default: 1024)",
     )
     parser.add_argument(
         "--thinking",

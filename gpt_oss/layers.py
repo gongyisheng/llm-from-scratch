@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,8 +15,8 @@ class RMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_dtype = x.dtype
         x = x.to(torch.float32)
-        rms = x.pow(2).mean(dim=-1, keepdim=True).sqrt()
-        output = x / (rms + self.eps) * self.weight
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        output = x * torch.rsqrt(variance + self.eps) * self.weight
         output = output.to(orig_dtype)
         return output
 
@@ -40,33 +42,45 @@ class RoPE(nn.Module):
         self._build_buffers()
     
     def _build_buffers(self):
-        freqs = 1 / self.rope_base ** (torch.arange(0, self.head_dim, 2) / self.head_dim)
+        dim = self.head_dim
+        half_dim = dim // 2
 
-        # YaRN specific logic - slow down low freqs, make sure it doesn't break under extended context
-        # transform freq to wave length, calc high/low threshold, recommend by paper 32/1
-        wave_len = 2 * torch.pi / freqs
-        low_threshold = self.yarn_original_context_length / self.yarn_beta_fast
-        high_threshold = self.yarn_original_context_length / self.yarn_beta_slow
+        # Base inverse frequencies
+        pos_freqs = self.rope_base ** (torch.arange(0, dim, 2).float() / dim)
+        inv_freq_extrapolation = 1.0 / pos_freqs
+        inv_freq_interpolation = 1.0 / (self.yarn_scaling_factor * pos_freqs)
 
-        # ramp (t), clip by 0/1, calculate new freqs
-        # concentration to help model distinguish angle diff after interpolate (slow down)
-        t = (wave_len - low_threshold) / (high_threshold - low_threshold)
-        t = t.clamp(0, 1)
-        effective_freqs = freqs * (1 - t) + (freqs / self.yarn_scaling_factor) * t
-        # concentration is an empirical formula
-        concentration = 0.1 * torch.log(torch.tensor(self.yarn_scaling_factor)) + 1.0
+        # YaRN: find correction range in dimension-index space (matching HF transformers)
+        def find_correction_dim(num_rotations):
+            return (dim * math.log(self.yarn_original_context_length / (num_rotations * 2 * math.pi))) / (2 * math.log(self.rope_base))
+
+        low = max(find_correction_dim(self.yarn_beta_fast), 0)
+        high = min(find_correction_dim(self.yarn_beta_slow), dim - 1)
+        if low == high:
+            high += 0.001
+
+        # Linear ramp across dimension indices: 0 at low, 1 at high
+        ramp = torch.clamp((torch.arange(half_dim).float() - low) / (high - low), 0, 1)
+        # extrapolation_factor=1 means keep original freq, 0 means use interpolated freq
+        inv_freq_extrapolation_factor = 1 - ramp
+        effective_inv_freq = (
+            inv_freq_interpolation * (1 - inv_freq_extrapolation_factor)
+            + inv_freq_extrapolation * inv_freq_extrapolation_factor
+        )
+
+        # Attention scaling factor (applied to sin/cos, NOT to angles)
+        attention_scaling = 0.1 * math.log(self.yarn_scaling_factor) + 1.0
 
         positions = torch.arange(self.max_seq_len)
-        angles = positions[:, None] * effective_freqs[None, :]
-        angles = angles * concentration
+        angles = positions[:, None] * effective_inv_freq[None, :]
 
         angles = torch.cat([angles, angles], dim=-1)
-        self.register_buffer("sin", torch.sin(angles))
-        self.register_buffer("cos", torch.cos(angles))
+        self.register_buffer("sin", torch.sin(angles) * attention_scaling)
+        self.register_buffer("cos", torch.cos(angles) * attention_scaling)
     
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
-        sin = self.sin[position_ids]
-        cos = self.cos[position_ids] # batch, seq_len, head_dim
+        sin = self.sin[position_ids].to(x.dtype)
+        cos = self.cos[position_ids].to(x.dtype)
 
         sin = sin[:, None, :, :]
         cos = cos[:, None, :, :]
@@ -91,22 +105,19 @@ class GroupQueryAttention(nn.Module):
         self.group_size = n_heads // n_kv_groups
 
         self.sinks = nn.Parameter(torch.empty(1, n_heads, 1, 1))
-        self.qkv_proj = nn.Linear(self.emb_dim, (self.n_heads + 2 * self.n_kv_groups) * self.head_dim, bias=True)
+        self.q_proj = nn.Linear(self.emb_dim, self.n_heads * self.head_dim, bias=True)
+        self.k_proj = nn.Linear(self.emb_dim, self.n_kv_groups * self.head_dim, bias=True)
+        self.v_proj = nn.Linear(self.emb_dim, self.n_kv_groups * self.head_dim, bias=True)
         self.out = nn.Linear(self.head_dim * self.n_heads, self.emb_dim, bias=True)
     
     def forward(self, x: torch.Tensor, rope: RoPE, position_ids: torch.Tensor, kv_cache=None, attn_mask=None) -> torch.Tensor:
         # x.shape: (batch, seq_len, emb_dim)
         batch, seq_len, _ = x.shape
-        
-        # get fused qkv, split by head
-        QKV = self.qkv_proj(x).view(batch, seq_len, (self.n_heads + 2*self.n_kv_groups), self.head_dim)
-        
-        # split QKV, reshape
-        Q, K, V = torch.split(QKV, [self.n_heads, self.n_kv_groups, self.n_kv_groups], dim=2)
 
-        Q = Q.view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        K = K.view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
-        V = V.view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
+        # separate Q, K, V projections (matching HF for bf16 precision)
+        Q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        K = self.k_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
+        V = self.v_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
 
         # apply rope
         Q = rope(Q, position_ids)
@@ -124,20 +135,26 @@ class GroupQueryAttention(nn.Module):
         scores = Q @ K.transpose(-2, -1) / self.head_dim ** 0.5
         if attn_mask is not None:
             scores += attn_mask
-        
-        # sliding windown mask on even layer
+
         _, _, q_len, kv_len = scores.shape
+
+        # causal mask during prefill (q_len > 1 and no external mask provided)
+        if q_len > 1 and attn_mask is None:
+            kv_offset = kv_len - q_len
+            causal = torch.triu(torch.ones(q_len, kv_len, device=x.device), diagonal=kv_offset + 1).bool()
+            scores.masked_fill_(causal, float("-inf"))
+
+        # sliding window mask on even layer
         if self.layer_idx % 2 == 0 and kv_len > self.sliding_window:
             mask = torch.tril(torch.ones(q_len, kv_len, device=x.device), diagonal=-self.sliding_window).bool()
             scores.masked_fill_(mask, float("-inf"))
         
-        # attn sink
-        # 1, n_head, 1, 1
-        # batch, n_head, seq_len, seq_len
+        # attn sink (concatenated at the end, matching HF)
         sinks = self.sinks.expand(batch, -1, q_len, -1)
-        scores = torch.concat([sinks, scores], dim=-1)
-        attn = F.softmax(scores, dim=-1, dtype=x.dtype)
-        attn = attn[:, :, :, 1:]
+        scores = torch.concat([scores, sinks], dim=-1)
+        scores = scores - scores.max(dim=-1, keepdim=True).values
+        attn = F.softmax(scores, dim=-1, dtype=scores.dtype)
+        attn = attn[:, :, :, :-1]
 
         context = attn @ V
         context = context.transpose(1, 2).reshape(batch, seq_len, -1)
@@ -155,7 +172,9 @@ class SwiGLUFFN(nn.Module):
         # gelu approximation, x * sigmoid(1.702x)
         # use bias = 1 for x_up: help with x_up to learn during initialization
         # avoid both x_gate and x_up are almost 0 and cause "dead zero"
-        output = x_gate.clamp(-7, 7) * torch.sigmoid(1.702 * x_gate) * (x_up.clamp(-7, 7) + 1)
+        x_gate = x_gate.clamp(max=7)
+        x_up = x_up.clamp(min=-7, max=7)
+        output = x_gate * torch.sigmoid(1.702 * x_gate) * (x_up + 1)
         return output
 
 
@@ -206,9 +225,9 @@ class SparseMoEBlock(nn.Module):
                 continue
             
             tokens = hidden_state[token_idx]
-            expert_output = F.linear(tokens, self.gate_up_proj_weight[expert_idx], self.gate_up_proj_bias[expert_idx])
+            expert_output = tokens @ self.gate_up_proj_weight[expert_idx].T.contiguous() + self.gate_up_proj_bias[expert_idx]
             expert_output = self.activation(expert_output)
-            expert_output = F.linear(expert_output, self.down_proj_weight[expert_idx], self.down_proj_bias[expert_idx])
+            expert_output = expert_output @ self.down_proj_weight[expert_idx].T.contiguous() + self.down_proj_bias[expert_idx]
             
             weighted_output = expert_output * routing_weights[token_idx, slot_idx].unsqueeze(-1)
             output[token_idx] += weighted_output
@@ -217,7 +236,7 @@ class SparseMoEBlock(nn.Module):
 
 
 class MoETransformersBlock(nn.Module):
-    def __init__(self, emb_dim: int, n_heads: int, n_kv_groups: int, head_dim: int, layer_idx: int, sliding_window: int, n_experts: int, n_experts_per_token: int, moe_hidden_dim: int, moe_norm_topk_prob: bool):
+    def __init__(self, emb_dim: int, n_heads: int, n_kv_groups: int, head_dim: int, layer_idx: int, sliding_window: int, n_experts: int, n_experts_per_token: int, moe_hidden_dim: int, moe_norm_topk_prob: bool, rms_norm_eps: float = 1e-6):
         super().__init__()
         self.emb_dim = emb_dim
         self.n_heads = n_heads
@@ -230,8 +249,8 @@ class MoETransformersBlock(nn.Module):
         self.moe_hidden_dim = moe_hidden_dim
         self.moe_norm_topk_prob = moe_norm_topk_prob
 
-        self.norm1 = RMSNorm(emb_dim)
-        self.norm2 = RMSNorm(emb_dim)
+        self.norm1 = RMSNorm(emb_dim, eps=rms_norm_eps)
+        self.norm2 = RMSNorm(emb_dim, eps=rms_norm_eps)
 
         self.attn = GroupQueryAttention(self.emb_dim, self.n_heads, self.n_kv_groups, self.head_dim, self.layer_idx, self.sliding_window)
         self.moe_ffn = SparseMoEBlock(self.emb_dim, self.n_experts, self.n_experts_per_token, self.moe_hidden_dim, self.moe_norm_topk_prob)

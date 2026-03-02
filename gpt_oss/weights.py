@@ -29,8 +29,15 @@ LAYER_KEY_MAP = {
     "mlp.experts.down_proj_bias": "moe_ffn.down_proj_bias",
 }
 
-# Separate Q/K/V projections in checkpoint -> fused qkv_proj in model
-QKV_SUFFIXES = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]
+# Separate Q/K/V projections -> map directly to model (no fusing)
+QKV_KEY_MAP = {
+    "self_attn.q_proj.weight": "attn.q_proj.weight",
+    "self_attn.q_proj.bias": "attn.q_proj.bias",
+    "self_attn.k_proj.weight": "attn.k_proj.weight",
+    "self_attn.k_proj.bias": "attn.k_proj.bias",
+    "self_attn.v_proj.weight": "attn.v_proj.weight",
+    "self_attn.v_proj.bias": "attn.v_proj.bias",
+}
 
 # MXFP4 quantized pairs: (blocks_suffix, scales_suffix) -> model weight key
 MXFP4_PAIRS = {
@@ -94,7 +101,6 @@ def load_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None)
         shard = load_file(str(f))
         renamed = {}
         mxfp4_cache = {}  # model_key -> {"blocks": ..., "scales": ...}
-        qkv_cache = {}    # "layers.{i}" -> {"q_proj.weight": ..., ...}
 
         for hf_key, tensor in shard.items():
             if not hf_key.startswith("model.layers."):
@@ -129,17 +135,13 @@ def load_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None)
             if matched_mxfp4:
                 continue
 
-            # Separate Q/K/V projections -> collect for fusing
-            matched_qkv = False
-            for qkv_prefix in QKV_SUFFIXES:
-                if hf_suffix.startswith(qkv_prefix):
-                    layer_key = f"layers.{layer_idx}"
-                    # e.g. "self_attn.q_proj.weight" -> "q_proj.weight"
-                    part_name = hf_suffix.replace("self_attn.", "")
-                    qkv_cache.setdefault(layer_key, {})[part_name] = tensor
-                    matched_qkv = True
-                    break
-            if matched_qkv:
+            # Q/K/V projections -> map directly
+            if hf_suffix in QKV_KEY_MAP:
+                new_key = f"layers.{layer_idx}.{QKV_KEY_MAP[hf_suffix]}"
+                if dtype is not None:
+                    tensor = tensor.to(dtype=dtype)
+                renamed[new_key] = tensor
+                loaded += 1
                 continue
 
             # Sinks: reshape (n_heads,) -> (1, n_heads, 1, 1)
@@ -158,21 +160,6 @@ def load_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None)
             else:
                 print(f"skipping unknown key: {hf_key}")
 
-        # Fuse Q/K/V into qkv_proj
-        for layer_key, qkv_parts in qkv_cache.items():
-            for param_type in ["weight", "bias"]:
-                parts = []
-                for prefix in ["q_proj", "k_proj", "v_proj"]:
-                    key = f"{prefix}.{param_type}"
-                    if key in qkv_parts:
-                        parts.append(qkv_parts[key])
-                if parts:
-                    fused = torch.cat(parts, dim=0)
-                    if dtype is not None:
-                        fused = fused.to(dtype=dtype)
-                    renamed[f"{layer_key}.attn.qkv_proj.{param_type}"] = fused
-                    loaded += 1
-
         # Decompress MXFP4 pairs
         for model_key, pair in mxfp4_cache.items():
             if "blocks" in pair and "scales" in pair:
@@ -183,7 +170,7 @@ def load_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None)
                 loaded += 1
 
         model.load_state_dict(renamed, strict=False, assign=True)
-        del shard, renamed, mxfp4_cache, qkv_cache
+        del shard, renamed, mxfp4_cache
 
     print(f"loaded {loaded} weights")
 

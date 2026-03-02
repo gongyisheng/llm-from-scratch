@@ -9,9 +9,9 @@ class GPTOSSModel(nn.Module):
         self.tok_emb = nn.Embedding(config.vocab_size, config.emb_dim)
         self.rope = RoPE(config.head_dim, config.rope_base, config.context_length, config.yarn_original_context_length, config.yarn_scaling_factor, config.yarn_beta_fast, config.yarn_beta_slow)
         self.layers = nn.ModuleList(
-            [MoETransformersBlock(config.emb_dim, config.n_heads, config.n_kv_groups, config.head_dim, layer_idx, config.context_sliding_window, config.n_experts, config.n_experts_per_token, config.moe_hidden_dim, config.moe_norm_topk_prob) for layer_idx in range(config.n_layers)]
+            [MoETransformersBlock(config.emb_dim, config.n_heads, config.n_kv_groups, config.head_dim, layer_idx, config.context_sliding_window, config.n_experts, config.n_experts_per_token, config.moe_hidden_dim, config.moe_norm_topk_prob, config.rms_norm_eps) for layer_idx in range(config.n_layers)]
         )
-        self.final_norm = RMSNorm(config.emb_dim)
+        self.final_norm = RMSNorm(config.emb_dim, eps=config.rms_norm_eps)
         self.lm_head = nn.Linear(config.emb_dim, config.vocab_size, bias=False)
         if config.tie_word_embeddings:
             self.lm_head.weight = self.tok_emb.weight

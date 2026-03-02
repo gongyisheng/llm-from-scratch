@@ -5,6 +5,8 @@ from gpt_oss.generate import generate_batch
 
 from tests.knowledge_runner import run_single_prompt_test, run_batch_test
 
+MODEL_ARCH = "gpt_oss"
+
 slow = pytest.mark.slow
 
 
@@ -13,7 +15,7 @@ def test_math(model_name, device):
     run_single_prompt_test(
         model_name, device,
         "What is 2+2? Reply with just the number.", "4",
-        load_model, run_inference,
+        load_model, run_inference, model_arch=MODEL_ARCH,
     )
 
 
@@ -22,7 +24,7 @@ def test_knowledge(model_name, device):
     run_single_prompt_test(
         model_name, device,
         "What is the capital of France? Reply with just the city name.", "Paris",
-        load_model, run_inference,
+        load_model, run_inference, model_arch=MODEL_ARCH,
     )
 
 
@@ -31,7 +33,7 @@ def test_comparison(model_name, device):
     run_single_prompt_test(
         model_name, device,
         "Which is bigger, 9.11 or 9.9? Reply with just the number.", "9.9",
-        load_model, run_inference,
+        load_model, run_inference, model_arch=MODEL_ARCH,
     )
 
 
@@ -50,5 +52,5 @@ def test_batch(model_name, device):
         ["What is 2+2? Reply with just the number.",
          "What is the capital of France? Reply with just the city name."],
         ["4", "Paris"],
-        load_model, generate_batch,
+        load_model, generate_batch, model_arch=MODEL_ARCH,
     )

@@ -127,7 +127,9 @@ def run_inference(
     top_k=-1,
 ):
     """Run inference and return decoded output text."""
-    token_ids = tokenizer.encode(prompt)
+    messages = [{"role": "user", "content": prompt}]
+    formatted = tokenizer.apply_chat_template(messages)
+    token_ids = tokenizer.encode(formatted)
 
     with torch.no_grad():
         output_ids = generate(
@@ -166,7 +168,10 @@ def main():
     )
     elapsed = time.time() - start
 
-    prompt_count = len(tokenizer.encode(args.prompt))
+    formatted_prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": args.prompt}]
+    )
+    prompt_count = len(tokenizer.encode(formatted_prompt))
     token_count = len(tokenizer.encode(output_text))
     new_tokens = token_count - prompt_count
     print(output_text)

@@ -11,11 +11,6 @@ from qwen3_moe.model import Qwen3MoEModel
 from qwen3_moe.weights import load_weights
 from qwen3_moe.generate import generate
 
-SUPPORTED_MODELS = {
-    "Qwen3-30B-A3B": "Qwen/Qwen3-30B-A3B",
-}
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Qwen3-MoE inference from scratch",
@@ -23,7 +18,7 @@ def parse_args():
     parser.add_argument(
         "-m",
         "--model",
-        choices=list(SUPPORTED_MODELS.keys()),
+        choices=["Qwen3-30B-A3B", "Qwen3-235B-A22B"],
         default="Qwen3-30B-A3B",
         help="model to use (default: Qwen3-30B-A3B)",
     )
@@ -31,7 +26,7 @@ def parse_args():
         "-p",
         "--prompt",
         default="Which is bigger, 9.9 or 9.11?",
-        help="user prompt text (default: 'Hello, who are you?')",
+        help="user prompt text (default: 'Which is bigger, 9.9 or 9.11?')",
     )
     parser.add_argument(
         "-t",
@@ -80,7 +75,7 @@ def ensure_checkpoint(model_name: str, model_dir: Path):
     if (model_dir / "config.json").exists():
         return
 
-    hf_repo = SUPPORTED_MODELS[model_name]
+    hf_repo = f"Qwen/{model_name}"
     print(f"Checkpoint not found at {model_dir}")
     answer = input(f"Download {hf_repo}? [Y/n] ").strip().lower()
 

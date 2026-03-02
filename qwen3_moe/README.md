@@ -31,7 +31,7 @@ uv run python -m qwen3_moe.main --thinking -p "Which one is bigger? 9.9 or 9.11"
 
 | Flag | Description | Default |
 |---|---|---|
-| `-m`, `--model` | `Qwen3-30B-A3B` | `Qwen3-30B-A3B` |
+| `-m`, `--model` | `Qwen3-30B-A3B`, `Qwen3-235B-A22B` | `Qwen3-30B-A3B` |
 | `-p`, `--prompt` | User prompt text | `Which is bigger, 9.9 or 9.11?` |
 | `-t`, `--temperature` | Sampling temperature (0 = greedy) | `1.0` |
 | `-k`, `--top-k` | Top-k filtering (-1 = disabled) | `-1` |
@@ -242,6 +242,20 @@ This is a 30B parameter model (~61GB in bf16). Options:
 | Attention | GQA (16q/8kv) | GQA (32q/4kv) |
 | Weight count per layer | 3 FFN matrices | 1 router + 128×3 expert matrices |
 | `tie_word_embeddings` | true | false |
+
+## Tests
+
+Run from the project root. Tests require downloaded checkpoints and `--model` flag.
+
+```bash
+# Knowledge tests: math, facts, thinking mode, batch correctness
+uv run python -m pytest tests/qwen3_moe/test_knowledge.py -m slow -v --model Qwen3-30B-A3B -s
+
+# Accuracy tests: token-level match vs HuggingFace transformers
+uv run python -m pytest tests/qwen3_moe/test_accuracy.py -m slow -v --model Qwen3-30B-A3B -s
+```
+
+Note: batch generation doesn't guarantee exact token match with single-sequence generation because the router's top-k expert selection is discontinuous — tiny floating-point differences from padding masks can flip which experts are selected. The batch test checks semantic correctness instead.
 
 ## References
 

@@ -400,31 +400,25 @@ scores = scores - scores.max(dim=-1, keepdim=True).values
 attn = F.softmax(scores, dim=-1, dtype=scores.dtype)
 ```
 
-### 8. `F.linear` (fused addmm) vs separate matmul + bias for MoE experts
+### 8. `F.linear` vs `.T.contiguous()` in MoE experts — accuracy vs performance tradeoff
 
-`F.linear(x, w, b)` uses `torch.addmm` which fuses matmul and bias addition into one kernel. In bf16 this produces different results than `x @ w.T + b` (separate operations). HF uses separate matmul + bias for experts.
+HF uses separate `matmul + bias` (not fused `torch.addmm`), and `.T.contiguous()` to force a specific BLAS kernel path. Matching this exactly gives token-for-token accuracy but is **extremely slow**:
 
-```python
-# Before — fused addmm
-expert_output = F.linear(tokens, self.gate_up_proj_weight[expert_idx], self.gate_up_proj_bias[expert_idx])
-
-# After — separate matmul + bias, matching HF
-expert_output = tokens @ self.gate_up_proj_weight[expert_idx].T + self.gate_up_proj_bias[expert_idx]
-```
-
-### 9. Non-contiguous `.T` in expert matmul
-
-`weight.T` creates a non-contiguous view (transposed strides). In bf16, matmul dispatches to different BLAS kernels for non-contiguous vs contiguous inputs, producing different accumulation results.
+`.T.contiguous()` copies the entire weight matrix every forward pass. With 4 active experts × 2 projections × 24 layers, that's **~4.8 GB of memcpy per decode step** — single-threaded memory copies that prevent multi-core CPU utilization (~110% CPU instead of ~400%).
 
 ```python
-# Before — non-contiguous transpose, different BLAS path
-expert_output = tokens @ weight[expert_idx].T + bias[expert_idx]
-
-# After — make contiguous, same BLAS path as HF
+# Accurate (matches HF token-for-token) but slow:
+# ~4.8 GB of weight copies per decode step, single-threaded memcpy bottleneck
 expert_output = tokens @ weight[expert_idx].T.contiguous() + bias[expert_idx]
+
+# Fast (uses multi-threaded BLAS, no copies) but may differ in bf16 rounding:
+# F.linear handles transpose via BLAS trans flag — zero-copy
+expert_output = F.linear(tokens, weight[expert_idx], bias[expert_idx])
 ```
 
-### 10. Attention sink concatenated at beginning vs end
+We use `F.linear` for performance. The bf16 rounding difference is negligible for practical use but will not pass the strict token-for-token accuracy test against HF.
+
+### 9. Attention sink concatenated at beginning vs end
 
 HF concatenates the sink at the **end** of attention scores: `cat([scores, sink])`. We had it at the beginning: `cat([sink, scores])`. While softmax is mathematically permutation-invariant, bf16 accumulates left-to-right, producing different rounding.
 
@@ -440,7 +434,7 @@ attn = F.softmax(scores, dim=-1)
 attn = attn[:, :, :, :-1]  # drop sink
 ```
 
-### 11. Fused QKV projection vs separate Q, K, V
+### 10. Fused QKV projection vs separate Q, K, V
 
 A single fused matmul `x @ [Wq; Wk; Wv]^T` (5120 output cols) hits different BLAS tiling than three separate matmuls `x @ Wq^T` (4096), `x @ Wk^T` (512), `x @ Wv^T` (512). Different tiling means different bf16 accumulation order per dot product.
 

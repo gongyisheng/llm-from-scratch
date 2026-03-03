@@ -11,11 +11,6 @@ from gpt_oss.model import GPTOSSModel
 from gpt_oss.weights import load_weights
 from gpt_oss.generate import generate
 
-SUPPORTED_MODELS = {
-    "gpt-oss-20b": "openai/gpt-oss-20b",
-}
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="GPT-OSS inference from scratch",
@@ -23,7 +18,7 @@ def parse_args():
     parser.add_argument(
         "-m",
         "--model",
-        choices=list(SUPPORTED_MODELS.keys()),
+        choices=["gpt-oss-20b", "gpt-oss-120b"],
         default="gpt-oss-20b",
         help="model to use (default: gpt-oss-20b)",
     )
@@ -75,7 +70,7 @@ def ensure_checkpoint(model_name: str, model_dir: Path):
     if (model_dir / "config.json").exists():
         return
 
-    hf_repo = SUPPORTED_MODELS[model_name]
+    hf_repo = f"openai/{model_name}"
     print(f"Checkpoint not found at {model_dir}")
     answer = input(f"Download {hf_repo}? [Y/n] ").strip().lower()
 

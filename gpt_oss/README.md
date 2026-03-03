@@ -2,14 +2,14 @@
 
 A from-scratch PyTorch implementation of [GPT-OSS-20B](https://huggingface.co/openai/gpt-oss-20b) inference. Builds on the same patterns as [Qwen3-MoE](../qwen3_moe/README.md) but introduces several novel architectural ideas from OpenAI.
 
-Target model: [GPT-OSS-20B](https://huggingface.co/openai/gpt-oss-20b) — 21B total params, ~3.6B active per token.
+Target model: [GPT-OSS-20B](https://huggingface.co/openai/gpt-oss-20b)
 
 ## Quick Start
 
 All commands run from the **project root** (`llm-from-scratch/`):
 
 ```bash
-# 1. Download model checkpoint
+# 1. Download model checkpoint (~16GB in MXFP4, ~42GB decompressed to bf16)
 bash scripts/download.sh openai/gpt-oss-20b
 
 # 2. Run inference
@@ -17,7 +17,26 @@ uv run python -m gpt_oss.main
 
 # Custom prompt
 uv run python -m gpt_oss.main -p "Explain attention sinks"
+
+# Tune generation parameters
+uv run python -m gpt_oss.main -t 0.7 -k 50 -n 512
+
+# Run on specific device
+uv run python -m gpt_oss.main -d cpu
 ```
+
+### CLI Options
+
+| Flag | Description | Default |
+|---|---|---|
+| `-m`, `--model` | `gpt-oss-20b` | `gpt-oss-20b` |
+| `-p`, `--prompt` | User prompt text | `Which is bigger, 9.9 or 9.11?` |
+| `-t`, `--temperature` | Sampling temperature (0 = greedy) | `1.0` |
+| `-k`, `--top-k` | Top-k filtering (-1 = disabled) | `-1` |
+| `-n`, `--max-tokens` | Max new tokens to generate | `4096` |
+| `-d`, `--device` | `cuda`, `cpu`, or `auto` | `auto` |
+
+If a checkpoint is missing, you'll be prompted to download it automatically (requires `huggingface_hub`).
 
 ## What's Different from Qwen3-MoE
 
@@ -37,7 +56,7 @@ Gate bias=False                         Router has bias                ← Step 
 128 experts, top-8                      32 experts, top-4              ← Step 6
 Softmax after top-k                     Softmax after top-k            (same)
 HuggingFace tokenizers                  tiktoken (o200k_base)          ← Step 2
-Jinja2 chat template                    Harmony format (no template)   ← Step 2
+Jinja2 chat template                    Jinja2 chat template           (same)
 bf16 safetensors                        MXFP4 quantized safetensors    ← Step 8
 ```
 
@@ -96,10 +115,10 @@ Assumes familiarity with [Qwen3-MoE](../qwen3_moe/README.md). Each step focuses 
 Map `config.json` to a dataclass. New fields vs Qwen3-MoE:
 
 ```python
-sliding_window: int        # 128 — local attention window for even layers
-swiglu_limit: float        # 7.0 — clamp threshold for SwiGLU activation
-initial_context_length: int # 4096 — original training length (for YaRN)
-rope_scaling_factor: float # 32.0 — YaRN extension factor
+context_sliding_window: int        # 128 — local attention window for even layers
+swiglu_limit: float                # 7.0 — clamp threshold for SwiGLU activation
+yarn_original_context_length: int  # 4096 — original training length (for YaRN)
+yarn_scaling_factor: float         # 32.0 — YaRN extension factor
 ```
 
 Fields that disappear (vs Qwen3-MoE): `moe_norm_topk_prob` (always softmax-after-topk), `moe_hidden_dim` (equals `intermediate_size`).
@@ -123,7 +142,7 @@ tokenizer = tiktoken.Encoding(
 
 Key tokens: `<|startoftext|>` (199998, BOS), `<|endoftext|>` (199999, PAD), `<|return|>` (200002, EOS).
 
-No Jinja2 chat template — GPT-OSS uses the proprietary "Harmony" format via `openai_harmony` library. We skip chat formatting and do raw text completion.
+Chat formatting uses a Jinja2 template (`chat_template.jinja`) shipped with the checkpoint, same approach as Qwen3.
 
 ### Step 3: YaRN RoPE (`layers.py`) — NEW
 
@@ -198,7 +217,7 @@ output = down_proj(output)
 gate, up = gate_up[..., ::2], gate_up[..., 1::2]  # deinterleave
 gate = clamp(gate, max=7.0)       # prevent explosion
 up = clamp(up, min=-7.0, max=7.0) # symmetric clamp
-glu = gate * sigmoid(1.702 * gate) # SiLU-like with alpha=1.702
+glu = gate * sigmoid(1.702 * gate) # GELU approximation
 output = glu * (up + 1)            # the +1 is the key difference
 ```
 
@@ -246,19 +265,21 @@ model.embed_tokens.weight           → tok_emb.weight
 model.norm.weight                   → final_norm.weight
 lm_head.weight                      → lm_head.weight
 
-# Per layer:
-model.layers.{i}.input_layernorm.weight              → layers.{i}.norm1.weight
-model.layers.{i}.post_attention_layernorm.weight      → layers.{i}.norm2.weight
+# Per layer — bf16 weights:
+model.layers.{i}.input_layernorm.weight                → layers.{i}.norm1.weight
+model.layers.{i}.post_attention_layernorm.weight        → layers.{i}.norm2.weight
 model.layers.{i}.self_attn.q_proj.weight/bias           → layers.{i}.attn.q_proj.weight/bias
 model.layers.{i}.self_attn.k_proj.weight/bias           → layers.{i}.attn.k_proj.weight/bias
 model.layers.{i}.self_attn.v_proj.weight/bias           → layers.{i}.attn.v_proj.weight/bias
 model.layers.{i}.self_attn.o_proj.weight/bias           → layers.{i}.attn.out.weight/bias
-model.layers.{i}.self_attn.sinks                       → layers.{i}.attn.sinks
-model.layers.{i}.mlp.gate.weight/bias                  → layers.{i}.moe.router.weight/bias
-model.layers.{i}.mlp.mlp1_weight                       → layers.{i}.moe.mlp1_weight
-model.layers.{i}.mlp.mlp1_bias                         → layers.{i}.moe.mlp1_bias
-model.layers.{i}.mlp.mlp2_weight                       → layers.{i}.moe.mlp2_weight
-model.layers.{i}.mlp.mlp2_bias                         → layers.{i}.moe.mlp2_bias
+model.layers.{i}.self_attn.sinks                        → layers.{i}.attn.sinks (reshaped to 1,n_heads,1,1)
+model.layers.{i}.mlp.router.weight/bias                 → layers.{i}.moe_ffn.router.proj.weight/bias
+model.layers.{i}.mlp.experts.gate_up_proj_bias          → layers.{i}.moe_ffn.gate_up_proj_bias
+model.layers.{i}.mlp.experts.down_proj_bias             → layers.{i}.moe_ffn.down_proj_bias
+
+# Per layer — MXFP4 quantized (blocks + scales → decompressed bf16):
+model.layers.{i}.mlp.experts.gate_up_proj_{blocks,scales} → layers.{i}.moe_ffn.gate_up_proj_weight
+model.layers.{i}.mlp.experts.down_proj_{blocks,scales}    → layers.{i}.moe_ffn.down_proj_weight
 ```
 
 Note: expert weights are stored as 3D tensors `(num_experts, ...)` rather than individual per-expert parameters. This matches the batched einsum approach in the forward pass.
@@ -447,6 +468,18 @@ Q, K, V = torch.split(qkv, [n_heads*d, n_kv*d, n_kv*d], dim=2)
 Q = self.q_proj(x)  # (batch, seq, 4096)
 K = self.k_proj(x)  # (batch, seq, 512)
 V = self.v_proj(x)  # (batch, seq, 512)
+```
+
+## Tests
+
+Run from the project root. Tests require downloaded checkpoints.
+
+```bash
+# Knowledge tests: math, facts, correctness
+uv run python -m pytest tests/gpt_oss/test_knowledge.py -m slow -v --model gpt-oss-20b -s
+
+# Accuracy tests: token-level match vs HuggingFace transformers
+uv run python -m pytest tests/gpt_oss/test_accuracy.py -m slow -v --model gpt-oss-20b -s
 ```
 
 ## References

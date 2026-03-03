@@ -1,8 +1,10 @@
 # Qwen3 Inference from Scratch
 
-A from-scratch PyTorch implementation of Qwen3 dense model inference. Supports Qwen3-0.6B, Qwen3-1.7B, and Qwen3-4B. No `transformers` library — just raw tensor operations.
+A from-scratch PyTorch implementation of Qwen3 dense model inference. Supports all Qwen3 dense models from 0.6B to 32B
 
-Reference: [saurabhaloneai/qwen3-exp](https://github.com/saurabhaloneai/qwen3-exp/blob/main/src/qwen3.py) (JAX impl)
+Target model: [Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B)
+
+No `transformers` library — just raw tensor operations. Read [blog post](https://blog.yellowday.day/posts/qwen3_from_scratch/) for details behind.
 
 ## Quick Start
 
@@ -10,7 +12,7 @@ All commands run from the **project root** (`llm-from-scratch/`):
 
 ```bash
 # 1. Download model checkpoint (default: Qwen3-0.6B)
-bash scripts/download.sh
+bash scripts/download.sh Qwen/Qwen3-0.6B
 
 # 2. Run inference
 uv run python -m qwen3.main
@@ -29,7 +31,7 @@ uv run python -m qwen3.main --thinking -p "Which one is bigger? 9.9 or 9.11"
 
 | Flag | Description | Default |
 |---|---|---|
-| `-m`, `--model` | `Qwen3-0.6B`, `Qwen3-1.7B`, `Qwen3-4B` | `Qwen3-0.6B` |
+| `-m`, `--model` | `Qwen3-0.6B`, `Qwen3-1.7B`, `Qwen3-4B`, `Qwen3-8B`, `Qwen3-14B`, `Qwen3-32B` | `Qwen3-0.6B` |
 | `-p`, `--prompt` | User prompt text | `Which is bigger, 9.9 or 9.11?` |
 | `-t`, `--temperature` | Sampling temperature (0 = greedy) | `1.0` |
 | `-k`, `--top-k` | Top-k filtering (-1 = disabled) | `-1` |
@@ -62,7 +64,6 @@ Token IDs → Embedding → [28 × Transformer Block] → RMSNorm → LM Head �
 | `n_layers` | 28 | transformer blocks |
 | `hidden_dim` | 3072 | FFN intermediate size |
 | `rope_base` | 1,000,000 | RoPE frequency base |
-| `qk_norm` | True | RMSNorm on Q and K before attention |
 | `context_length` | 40960 | max sequence length |
 
 Note: `n_heads * head_dim = 2048`, not `emb_dim (1024)`. The Q/K/V projections change dimensionality.
@@ -73,10 +74,10 @@ Note: `n_heads * head_dim = 2048`, not `emb_dim (1024)`. The Q/K/V projections c
 qwen3/
 ├── config.py       # Step 1: model config dataclass
 ├── tokenizer.py    # Step 2: tokenizer + chat template
-├── layers.py       # Steps 3-6: RMSNorm, RoPE, GQA, SwiGLU FFN
-├── model.py        # Step 7: transformer block + forward pass
-├── weights.py      # Step 8a: load safetensors weights
-├── generate.py     # Step 8b: generation loop with KV cache
+├── layers.py       # Steps 3-7: RMSNorm, RoPE, GQA, SwiGLU FFN, Transformer Block
+├── model.py        # Step 8: full model (stack blocks + LM head)
+├── weights.py      # Step 9: load safetensors weights
+├── generate.py     # Step 10: generation loop with KV cache
 └── main.py         # tie it all together
 
 tests/qwen3/
@@ -160,17 +161,19 @@ FFN(x) = SiLU(x @ W_gate) * (x @ W_up) @ W_down
 
 Three matrices at 3x expansion instead of two at 4x — similar total params.
 
-### Step 7: Assemble Transformer (`model.py`)
+### Step 7: Transformer Block (`layers.py`)
 
 Each block: pre-norm → attention + residual → pre-norm → FFN + residual.
 
-Stack 28 blocks, add final RMSNorm and LM head.
+### Step 8: Assemble Model (`model.py`)
 
-### Step 8a: Weight Loading (`weights.py`)
+Stack N transformer blocks, add final RMSNorm and LM head.
+
+### Step 9: Weight Loading (`weights.py`)
 
 Map HuggingFace weight names to your model's state dict keys. HuggingFace stores linear weights as `[out, in]` — your `nn.Linear` handles this automatically.
 
-### Step 8b: Generation Loop (`generate.py`)
+### Step 10: Generation Loop (`generate.py`)
 
 **Single sequence** (`generate()`):
 1. **Prefill**: forward pass on full prompt, get KV cache
@@ -182,17 +185,19 @@ Map HuggingFace weight names to your model's state dict keys. HuggingFace stores
 2. **Build `position_ids`**: padding positions get 0, real tokens get 0, 1, 2, ...
 3. **Build attention mask**: combined causal + padding mask. Padding positions self-attend to avoid NaN from `softmax(all -inf)`
 4. **Prefill + decode** with per-sequence EOS tracking
-5. Batch output matches single-sequence output exactly (verified by tests)
+5. Batch output is semantically correct (bf16 rounding may cause minor token-level divergence from single-sequence)
 
 ## Tests
 
-Run from the project root:
+Run from the project root. Tests require downloaded checkpoints and `--model` flag.
 
 ```bash
-uv run python -m pytest tests/qwen3/ -v -m slow
-```
+# Knowledge tests: math, facts, thinking mode, batch correctness
+uv run python -m pytest tests/qwen3/test_knowledge.py -m slow -v --model Qwen3-0.6B -s
 
-Tests require downloaded checkpoints. Runs math, knowledge, thinking mode, and batch vs. single-sequence equivalence across all three model sizes.
+# Accuracy tests: token-level match vs HuggingFace transformers
+uv run python -m pytest tests/qwen3/test_accuracy.py -m slow -v --model Qwen3-0.6B -s
+```
 
 ## Notes
 

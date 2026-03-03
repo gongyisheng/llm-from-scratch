@@ -138,12 +138,6 @@ class GroupQueryAttention(nn.Module):
 
         _, _, q_len, kv_len = scores.shape
 
-        # causal mask during prefill (q_len > 1 and no external mask provided)
-        if q_len > 1 and attn_mask is None:
-            kv_offset = kv_len - q_len
-            causal = torch.triu(torch.ones(q_len, kv_len, device=x.device), diagonal=kv_offset + 1).bool()
-            scores.masked_fill_(causal, float("-inf"))
-
         # sliding window mask on even layer
         if self.layer_idx % 2 == 0 and kv_len > self.sliding_window:
             mask = torch.tril(torch.ones(q_len, kv_len, device=x.device), diagonal=-self.sliding_window).bool()

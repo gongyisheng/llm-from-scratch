@@ -1,0 +1,50 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from parallel.comm import all_reduce
+
+
+class ColumnParallelLinear(nn.Module):
+    """Linear layer with output dimension split across ranks.
+
+    weight shape: (out_features // world_size, in_features)
+    No communication needed in forward.
+    """
+    def __init__(self, in_features: int, out_features: int, world_size: int = 1, bias: bool = False):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.world_size = world_size
+        self.weight = nn.Parameter(torch.empty(out_features // world_size, in_features))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_features // world_size))
+        else:
+            self.bias = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(x, self.weight, self.bias)
+
+
+class RowParallelLinear(nn.Module):
+    """Linear layer with input dimension split across ranks.
+
+    weight shape: (out_features, in_features // world_size)
+    all_reduce after matmul when world_size > 1.
+    """
+    def __init__(self, in_features: int, out_features: int, world_size: int = 1, bias: bool = False):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.world_size = world_size
+        self.weight = nn.Parameter(torch.empty(out_features, in_features // world_size))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_features))
+        else:
+            self.bias = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        output = F.linear(x, self.weight, self.bias)
+        if self.world_size > 1:
+            all_reduce(output)
+        return output

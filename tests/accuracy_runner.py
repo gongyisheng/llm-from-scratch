@@ -78,8 +78,12 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
     hf_tokenizer = transformers.AutoTokenizer.from_pretrained(str(model_dir))
     hf_model = transformers.AutoModelForCausalLM.from_pretrained(
         str(model_dir), dtype=torch.bfloat16, attn_implementation="eager",
-    ).to(device)
+        device_map=device,
+    )
     hf_model.requires_grad_(False)
+    # Force loop-based expert forward (not grouped_mm) to match scratch implementation
+    if hasattr(hf_model.config, "_experts_implementation"):
+        hf_model.config._experts_implementation = None
     t_hf_load = time.perf_counter() - t0
     print(f"\n  Load Model: {t_hf_load:.2f}s")
 

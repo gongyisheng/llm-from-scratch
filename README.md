@@ -41,7 +41,7 @@ Common flags: `-m MODEL`, `-p PROMPT`, `-t TEMPERATURE`, `-k TOP_K`, `-n MAX_TOK
 All three share GQA, RoPE, SwiGLU, RMSNorm, and KV cache. What's unique:
 
 - **Qwen3** — QK-Norm (RMSNorm per head on Q and K)
-- **Qwen3-MoE** — Sparse MoE routing (128 experts, top-8) replacing the dense FFN
+- **Qwen3-MoE** — Sparse MoE routing (128 experts, top-8) replacing the dense FFN; fused 3D expert weight tensors, softmax-before-topk routing (matches HF transformers 5.x)
 - **GPT-OSS** — Attention sinks, alternating sliding/full window, YaRN RoPE (4K → 131K), clamped SwiGLU, MXFP4 weight quantization, `tiktoken` tokenizer
 
 ## Project Structure
@@ -80,3 +80,7 @@ Each model is a self-contained package with the same file layout. Shared utiliti
 ```bash
 uv run python -m pytest tests/ -v -m slow
 ```
+
+## Dependencies
+
+Managed by [uv](https://docs.astral.sh/uv/). Runtime needs only `torch`, `safetensors`, and `tokenizers`. Test extras add `transformers>=5.2`, `accelerate`, `huggingface_hub`, `tqdm`, and `pytest`.

@@ -268,6 +268,10 @@ Notes:
 - Batch generation doesn't guarantee exact token match with single-sequence generation because the router's top-k expert selection is discontinuous — tiny floating-point differences from padding masks can flip which experts are selected. The batch test checks semantic correctness instead.
 - The accuracy test forces HF to use loop-based expert forward (`_experts_implementation = None`) instead of the default `grouped_mm` kernel, which produces different floating-point results. Our loop-based scratch implementation matches the loop-based HF path exactly.
 
+## TODO
+
+- [ ] Implement and test alternative expert dispatch strategies (e.g. `grouped_mm`)
+
 ## References
 
 - [Qwen3 Dense Implementation](../qwen3/) — base code this builds on (reuses RMSNorm, RoPE, GQA, tokenizer, generation loop)

@@ -101,22 +101,6 @@ class GroupQueryAttention(nn.Module):
         return output, new_kv_cache
 
 
-class SwiGLUFFN(nn.Module):
-    def __init__(self, emb_dim: int, moe_hidden_dim: int):
-        super().__init__()
-        self.emb_dim = emb_dim
-        self.moe_hidden_dim = moe_hidden_dim
-        self.gate_proj = nn.Linear(self.emb_dim, self.moe_hidden_dim, bias=False)
-        self.up_proj = nn.Linear(self.emb_dim, self.moe_hidden_dim, bias=False)
-        self.down_proj = nn.Linear(self.moe_hidden_dim, self.emb_dim, bias=False)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x.shape: (batch, seq_len, emb_dim)
-        gate = F.silu(self.gate_proj(x))                # gate.shape: (batch, seq_len, moe_hidden_dim)
-        output = self.down_proj(gate * self.up_proj(x)) # output.shape: (batch, seq_len, emb_dim)
-        return output
-
-
 class MoERouter(nn.Module):
     def __init__(self, emb_dim: int, n_experts: int, n_experts_per_token: int, moe_norm_topk_prob: bool):
         super().__init__()
@@ -128,11 +112,13 @@ class MoERouter(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x.shape: (num_tokens, emb_dim)
-        router_scores = self.proj(x)
-        # values/indices shape: (batch, seq_len, n_experts_per_token)
-        values, indices = torch.topk(router_scores, self.n_experts_per_token)
+        router_logits = self.proj(x)
+        # softmax over all experts first, then select top-k (matches HF 5.x)
+        router_probs = F.softmax(router_logits, dtype=torch.float32, dim=-1)
+        # values/indices shape: (num_tokens, n_experts_per_token)
+        values, indices = torch.topk(router_probs, self.n_experts_per_token, dim=-1)
         if self.moe_norm_topk_prob:
-            values = F.softmax(values, dim=-1)
+            values = values / values.sum(dim=-1, keepdim=True)
         return values, indices
 
 
@@ -142,38 +128,37 @@ class SparseMoEBlock(nn.Module):
         self.emb_dim = emb_dim
         self.n_experts = n_experts
         self.n_experts_per_token = n_experts_per_token
-        self.moe_hidden_dim = moe_hidden_dim
         self.moe_norm_topk_prob = moe_norm_topk_prob
-        self.experts = nn.ModuleList([
-            SwiGLUFFN(self.emb_dim, self.moe_hidden_dim) for _ in range(n_experts)
-        ])
+        # fused 3D expert weights (matches HF 5.x Qwen3MoeExperts)
+        self.gate_up_proj = nn.Parameter(torch.empty(n_experts, 2 * moe_hidden_dim, emb_dim))
+        self.down_proj = nn.Parameter(torch.empty(n_experts, emb_dim, moe_hidden_dim))
         self.router = MoERouter(self.emb_dim, self.n_experts, self.n_experts_per_token, self.moe_norm_topk_prob)
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x.shape: (batch, seq_len, emb_dim)
         batch, seq_len, emb_dim = x.shape
         hidden_states = x.view(-1, emb_dim)  # (num_tokens, emb_dim)
 
         routing_weights, selected_experts = self.router(hidden_states)
-        # routing_weights: (num_tokens, n_experts_per_token)
+        # routing_weights: (num_tokens, n_experts_per_token)  float32
         # selected_experts: (num_tokens, n_experts_per_token)
 
-        output = torch.zeros_like(hidden_states)  # (num_tokens, emb_dim)
+        final_hidden_states = torch.zeros_like(hidden_states)  # (num_tokens, emb_dim)
 
-        for expert_idx in range(self.n_experts):
-            # find which tokens selected this expert
-            token_idx, slot_idx = torch.where(selected_experts == expert_idx)
-            if token_idx.numel() == 0:
-                continue
+        for expert_idx in selected_experts.unique():
+            token_idx, top_k_pos = torch.where(selected_experts == expert_idx)
+            current_state = hidden_states[token_idx]
 
-            # run selected tokens through this expert
-            expert_output = self.experts[expert_idx](hidden_states[token_idx])
+            # fused gate+up projection, then chunk (matches HF 5.x computation order)
+            gate, up = F.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
+            current_hidden_states = F.silu(gate) * up
+            current_hidden_states = F.linear(current_hidden_states, self.down_proj[expert_idx])
 
             # weight by routing score and accumulate
-            weighted_output = routing_weights[token_idx, slot_idx].unsqueeze(-1)
-            output[token_idx] += expert_output * weighted_output
+            current_hidden_states = current_hidden_states * routing_weights[token_idx, top_k_pos, None]
+            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
 
-        return output.view(batch, seq_len, emb_dim)
+        return final_hidden_states.view(batch, seq_len, emb_dim)
 
 
 class MoETransformersBlock(nn.Module):

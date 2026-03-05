@@ -2,7 +2,9 @@
 
 A from-scratch PyTorch implementation of Qwen3-MoE (Mixture of Experts) inference. Builds on the [Qwen3 dense implementation](../qwen3/README.md) — same attention, tokenizer, and generation loop, but replaces the dense FFN with sparse expert routing.
 
-Target model: [Qwen3-30B-A3B](https://huggingface.co/Qwen/Qwen3-30B-A3B) — 30B total params, ~3B active per token.
+Target model: [Qwen3-30B-A3B](https://huggingface.co/Qwen/Qwen3-30B-A3B)
+
+No `transformers` library — just raw tensor operations. Read [blog post](https://blog.yellowday.day/posts/qwen3_moe_from_scratch/) for details behind.
 
 ## Quick Start
 
@@ -29,7 +31,7 @@ uv run python -m qwen3_moe.main --thinking -p "Which one is bigger? 9.9 or 9.11"
 
 | Flag | Description | Default |
 |---|---|---|
-| `-m`, `--model` | `Qwen3-30B-A3B` | `Qwen3-30B-A3B` |
+| `-m`, `--model` | `Qwen3-30B-A3B`, `Qwen3-235B-A22B` | `Qwen3-30B-A3B` |
 | `-p`, `--prompt` | User prompt text | `Which is bigger, 9.9 or 9.11?` |
 | `-t`, `--temperature` | Sampling temperature (0 = greedy) | `1.0` |
 | `-k`, `--top-k` | Top-k filtering (-1 = disabled) | `-1` |
@@ -38,26 +40,6 @@ uv run python -m qwen3_moe.main --thinking -p "Which one is bigger? 9.9 or 9.11"
 | `-d`, `--device` | `cuda`, `cpu`, or `auto` | `auto` |
 
 If a checkpoint is missing, you'll be prompted to download it automatically (requires `huggingface_hub`).
-
-## What Changes from Qwen3 Dense to MoE
-
-```
-Qwen3 Dense                          Qwen3 MoE
-─────────────                        ─────────────
-TransformerBlock:                    MoETransformersBlock:
-  RMSNorm → GQA → residual            RMSNorm → GQA → residual           (same)
-  RMSNorm → SwiGLU FFN → residual     RMSNorm → SparseMoEBlock → residual  (CHANGED)
-                                              │
-                                              ├── MoERouter: picks 8 of 128 experts
-                                              └── 128 × small SwiGLU experts
-```
-
-Only 3 things change:
-1. **Config** — 4 new MoE fields (`n_experts`, `n_experts_per_token`, `moe_hidden_dim`, `moe_norm_topk_prob`)
-2. **FFN replacement** — `SwiGLUFFN` → `SparseMoEBlock` (router + 128 experts)
-3. **Weight mapping** — new keys for router and expert weights
-
-Everything else (RMSNorm, RoPE, GQA, tokenizer, generation loop) is identical to Qwen3.
 
 ## Architecture Overview
 
@@ -69,8 +51,8 @@ Token IDs → Embedding → [48 × MoE Transformer Block] → RMSNorm → LM Hea
                               ├── RMSNorm
                               └── SparseMoEBlock + Residual
                                     │
-                                    ├── MoERouter → top-8 of 128 experts
-                                    └── 128 × SwiGLUFFN (small)
+                                    ├── MoERouter → softmax → top-8 of 128 experts
+                                    └── Fused 3D expert weights (gate_up_proj, down_proj)
 ```
 
 ## Qwen3-30B-A3B Config
@@ -100,30 +82,32 @@ The core idea: instead of one large FFN processing every token, route each token
 Token hidden state (2048-dim)
         │
         ▼
-┌─── MoERouter ────┐
-│ Linear(2048, 128) ← produces 128 scores, one per expert
-│ Top-8 selection   ← pick 8 highest-scoring experts
-│ Softmax over 8    ← normalize weights to sum to 1
-└────────┬─────────┘
+┌─── MoERouter ────────┐
+│ Linear(2048, 128)     ← produces 128 scores, one per expert
+│ Softmax over all 128  ← normalize across ALL experts first
+│ Top-8 selection       ← then pick 8 highest
+│ Re-normalize top-8    ← weights sum to 1 (norm_topk_prob=True)
+└────────┬─────────────┘
          │  routing_weights: (num_tokens, 8)
          │  selected_experts: (num_tokens, 8)
          ▼
-┌─ For each of 128 experts ─┐
+┌─ For each active expert ──┐
 │  Find tokens routed here   │
-│  Expert_i(tokens) × weight │  ← run through expert, scale by routing weight
+│  Expert_i(tokens) × weight │  ← fused gate+up projection, SiLU, down projection
 └─────────┬──────────────────┘
           │
           ▼  Sum all expert outputs per token
      Output (2048-dim)
 ```
 
-Each expert is a small SwiGLU FFN:
+Expert weights are stored as fused 3D tensors (matches HF transformers 5.x `Qwen3MoeExperts`):
 ```
-Expert_i(x) = SiLU(x @ gate_proj) * (x @ up_proj) @ down_proj
+gate_up_proj: (128, 2×768, 2048)  ← gate and up projections fused per expert
+down_proj:    (128, 2048, 768)
 
-gate_proj: (2048, 768)   ← much smaller than dense FFN's (2048, 3072)
-up_proj:   (2048, 768)
-down_proj: (768, 2048)
+Expert_i(x):
+  gate, up = linear(x, gate_up_proj[i]).chunk(2)   ← single fused matmul
+  output = linear(SiLU(gate) * up, down_proj[i])
 ```
 
 Why it works: 128 experts × 768 intermediate = 98,304 total capacity, but only 8 × 768 = 6,144 active per token. The model learns to specialize experts for different token types.
@@ -134,7 +118,7 @@ Why it works: 128 experts × 768 intermediate = 98,304 total capacity, but only 
 qwen3_moe/
 ├── config.py       # Step 1: config dataclass with MoE fields
 ├── tokenizer.py    # (reused from qwen3, identical)
-├── layers.py       # Steps 2-4: all layers (RMSNorm, RoPE, GQA, SwiGLUFFN, MoERouter, SparseMoEBlock, MoETransformersBlock)
+├── layers.py       # Steps 2-4: all layers (RMSNorm, RoPE, GQA, MoERouter, SparseMoEBlock, MoETransformersBlock)
 ├── model.py        # Step 5: full model assembly
 ├── weights.py      # Step 6: weight mapping for router + experts
 ├── generate.py     # Step 7: generation loop (same logic as qwen3)
@@ -162,9 +146,9 @@ You can subclass `Qwen3Config` or create a standalone `Qwen3MoEConfig`. This imp
 
 ### Step 2: Reuse Dense Layers (`layers.py`)
 
-Copy or import these unchanged from Qwen3: `RMSNorm`, `RoPE`, `GroupQueryAttention`, `SwiGLUFFN`.
+Copy or import these unchanged from Qwen3: `RMSNorm`, `RoPE`, `GroupQueryAttention`.
 
-The `SwiGLUFFN` class is reused as-is for each expert — the only difference is the intermediate dimension (`768` instead of `3072`).
+No separate `SwiGLUFFN` class is needed — expert computations use fused 3D weight tensors directly (see Step 4).
 
 ### Step 3: MoE Router (`layers.py`)
 
@@ -178,36 +162,40 @@ class MoERouter(nn.Module):
 
 Forward logic:
 1. **Score all experts**: `scores = proj(hidden_states)` → shape `(num_tokens, 128)`
-2. **Top-k selection**: `torch.topk(scores, n_experts_per_token)` → top-8 values and indices
-3. **Normalize**: `softmax(top_k_values)` → makes the 8 weights sum to 1.0
+2. **Softmax over all experts**: `softmax(scores)` → probabilities across all 128 experts
+3. **Top-k selection**: `torch.topk(probs, n_experts_per_token)` → top-8 values and indices
+4. **Re-normalize** (when `moe_norm_topk_prob=True`): divide by sum so the 8 weights sum to 1.0
 
-Key design choice: softmax is applied **after** top-k selection (controlled by `moe_norm_topk_prob=True`). This means only the 8 selected scores compete, not all 128.
+Key design choice: softmax is applied **before** top-k selection (softmax-before-topk). This matches the HF transformers 5.x computation order — all 128 experts compete in the softmax, then the top-8 are selected.
 
 Returns: `routing_weights (num_tokens, 8)` and `selected_experts (num_tokens, 8)`
 
 ### Step 4: SparseMoEBlock (`layers.py`)
 
-Combines the router with 128 expert FFNs. This replaces the single dense `SwiGLUFFN`.
+Combines the router with fused 3D expert weight tensors. This replaces the single dense FFN.
 
 ```python
 class SparseMoEBlock(nn.Module):
     # router: MoERouter
-    # experts: ModuleList of 128 SwiGLUFFN(emb_dim=2048, moe_hidden_dim=768)
+    # gate_up_proj: Parameter(n_experts, 2 * moe_hidden_dim, emb_dim)  ← fused 3D tensor
+    # down_proj:    Parameter(n_experts, emb_dim, moe_hidden_dim)      ← fused 3D tensor
 ```
 
-Forward logic — the **loop-over-experts approach**:
+Forward logic — the **loop-over-active-experts approach**:
 ```
 1. Flatten input: (batch, seq, hidden) → (num_tokens, hidden)
 2. Get routing: weights, expert_indices = router(hidden_states)
 3. Allocate output: zeros_like(hidden_states)
-4. For each expert_idx in 0..127:
+4. For each expert_idx in selected_experts.unique():
      - torch.where(selected_experts == expert_idx) → find routed tokens
-     - If any: run those tokens through expert, multiply by routing weight
-     - Accumulate into output via output[token_idx] += expert_output * weights
+     - Fused gate+up: linear(tokens, gate_up_proj[expert_idx]).chunk(2)
+     - SwiGLU: SiLU(gate) * up
+     - Down: linear(result, down_proj[expert_idx])
+     - Scale by routing weight and accumulate via index_add_
 5. Reshape output back to (batch, seq, hidden)
 ```
 
-Why loop over experts (not tokens)? Each expert processes a variable-sized batch of tokens. Looping over experts gives larger matrix multiplies than looping over tokens (where each runs 8 tiny matmuls).
+Why loop over experts (not tokens)? Each expert processes a variable-sized batch of tokens. Looping over experts gives larger matrix multiplies than looping over tokens (where each runs 8 tiny matmuls). Using `selected_experts.unique()` skips experts that received no tokens.
 
 ### Step 5: Assemble Model (`model.py`)
 
@@ -227,16 +215,18 @@ norm2 → SparseMoEBlock → residual  (FFN replaced with MoE)
 HuggingFace weight names → your model's state dict. Same attention/norm mappings as Qwen3, plus:
 
 ```
-# MoE router (one per layer):
+# MoE router (one per layer, mapped directly):
 model.layers.{i}.mlp.gate.weight → layers.{i}.moe_ffn.router.proj.weight
 
-# MoE experts (128 per layer, 3 matrices each):
-model.layers.{i}.mlp.experts.{j}.gate_proj.weight → layers.{i}.moe_ffn.experts.{j}.gate_proj.weight
-model.layers.{i}.mlp.experts.{j}.up_proj.weight   → layers.{i}.moe_ffn.experts.{j}.up_proj.weight
-model.layers.{i}.mlp.experts.{j}.down_proj.weight  → layers.{i}.moe_ffn.experts.{j}.down_proj.weight
+# MoE experts (128 per layer, 3 matrices each — fused during loading):
+model.layers.{i}.mlp.experts.{j}.gate_proj.weight ─┐
+model.layers.{i}.mlp.experts.{j}.up_proj.weight   ─┼→ layers.{i}.moe_ffn.gate_up_proj  (n_experts, 2*moe_hidden_dim, emb_dim)
+model.layers.{i}.mlp.experts.{j}.down_proj.weight  ─→ layers.{i}.moe_ffn.down_proj     (n_experts, emb_dim, moe_hidden_dim)
 ```
 
-The expert weights just need `mlp.experts.` → `moe_ffn.experts.` prefix replacement. The router requires mapping `mlp.gate.weight` → `moe_ffn.router.proj.weight`.
+Expert weight loading is a two-phase process:
+1. **Buffer**: collect per-expert `gate_proj`, `up_proj`, `down_proj` tensors from safetensors shards (matched by regex)
+2. **Fuse**: for each layer, `torch.cat` gate+up per expert, then `torch.stack` across all 128 experts into the 3D `gate_up_proj` tensor. `down_proj` is stacked directly.
 
 ### Step 7: Generation Loop (`generate.py`)
 
@@ -253,13 +243,34 @@ This is a 30B parameter model (~61GB in bf16). Options:
 
 | Aspect | Qwen3 Dense | Qwen3 MoE |
 |---|---|---|
-| FFN per layer | 1 large SwiGLU (3072 hidden) | 128 small SwiGLU (768 hidden each) |
+| FFN per layer | 1 large SwiGLU (3072 hidden) | 128 small experts (768 hidden each), fused 3D weights |
 | Active params/token | All | ~3B of 30B |
 | New modules | — | MoERouter, SparseMoEBlock |
 | Layers | 28 | 48 |
 | Attention | GQA (16q/8kv) | GQA (32q/4kv) |
-| Weight count per layer | 3 FFN matrices | 1 router + 128×3 expert matrices |
+| Expert weights | 3 separate FFN matrices | fused `gate_up_proj` (n_experts, 2\*hidden, emb) + `down_proj` (n_experts, emb, hidden) |
+| Routing | — | softmax-before-topk (matches HF 5.x) |
 | `tie_word_embeddings` | true | false |
+
+## Tests
+
+Run from the project root. Tests require downloaded checkpoints and `--model` flag.
+
+```bash
+# Knowledge tests: math, facts, thinking mode, batch correctness
+uv run python -m pytest tests/qwen3_moe/test_knowledge.py -m slow -v --model Qwen3-30B-A3B -s
+
+# Accuracy tests: token-level match vs HuggingFace transformers
+uv run python -m pytest tests/qwen3_moe/test_accuracy.py -m slow -v --model Qwen3-30B-A3B -s
+```
+
+Notes:
+- Batch generation doesn't guarantee exact token match with single-sequence generation because the router's top-k expert selection is discontinuous — tiny floating-point differences from padding masks can flip which experts are selected. The batch test checks semantic correctness instead.
+- The accuracy test forces HF to use loop-based expert forward (`_experts_implementation = None`) instead of the default `grouped_mm` kernel, which produces different floating-point results. Our loop-based scratch implementation matches the loop-based HF path exactly.
+
+## TODO
+
+- [ ] Implement and test alternative expert dispatch strategies (e.g. `grouped_mm`)
 
 ## References
 
@@ -273,4 +284,4 @@ This is a 30B parameter model (~61GB in bf16). Options:
 
 Managed by [uv](https://docs.astral.sh/uv/). Dependencies are declared in the root `pyproject.toml` and installed automatically on `uv run`.
 
-**Note:** The accuracy tests pin `transformers>=4.51,<5`. Transformers 5.x refactored MoE experts into fused 3D weight tensors (`gate_up_proj`), changing the floating-point computation order. This produces numerically different bfloat16 results even though the math is equivalent, causing the token-level accuracy comparison to fail. Our per-expert implementation matches transformers 4.x exactly.
+**Note:** The accuracy tests require `transformers>=5.2`. Our implementation uses fused 3D expert weight tensors (`gate_up_proj`, `down_proj`) and softmax-before-topk routing to match the HuggingFace transformers 5.x computation order exactly.

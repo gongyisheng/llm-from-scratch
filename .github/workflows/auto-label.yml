@@ -49,8 +49,12 @@ jobs:
             const hasQwen3Moe = filenames.some(f =>
               f.startsWith('qwen3_moe/') || f.startsWith('tests/qwen3_moe/')
             );
+            const hasGptOss = filenames.some(f =>
+              f.startsWith('gpt_oss/') || f.startsWith('tests/gpt_oss/')
+            );
             core.setOutput('qwen3_dense', hasQwen3Dense);
             core.setOutput('qwen3_moe', hasQwen3Moe);
+            core.setOutput('gpt_oss', hasGptOss);
 
       - name: Add labels
         uses: actions/github-script@v7
@@ -59,10 +63,12 @@ jobs:
             const prNumber = ${{ steps.pr.outputs.number }};
             const hasQwen3Dense = '${{ steps.files.outputs.qwen3_dense }}' === 'true';
             const hasQwen3Moe = '${{ steps.files.outputs.qwen3_moe }}' === 'true';
+            const hasGptOss = '${{ steps.files.outputs.gpt_oss }}' === 'true';
 
             const ciLabels = [];
             if (hasQwen3Dense) ciLabels.push('run-ci-qwen3-dense');
             if (hasQwen3Moe) ciLabels.push('run-ci-qwen3-moe');
+            if (hasGptOss) ciLabels.push('run-ci-gpt-oss');
 
             if (ciLabels.length > 0) {
               await github.rest.issues.addLabels({

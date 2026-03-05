@@ -5,28 +5,28 @@ from pathlib import Path
 
 import torch
 
-from qwen3_moe.config import Qwen3MoEConfig
-from qwen3_moe.tokenizer import Qwen3Tokenizer
-from qwen3_moe.model import Qwen3MoEModel
-from qwen3_moe.weights import load_weights
-from qwen3_moe.generate import generate
+from gpt_oss.config import GPTOSSConfig
+from gpt_oss.tokenizer import GPTOSSTokenizer
+from gpt_oss.model import GPTOSSModel
+from gpt_oss.weights import load_weights
+from gpt_oss.generate import generate
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Qwen3-MoE inference from scratch",
+        description="GPT-OSS inference from scratch",
     )
     parser.add_argument(
         "-m",
         "--model",
-        choices=["Qwen3-30B-A3B", "Qwen3-235B-A22B"],
-        default="Qwen3-30B-A3B",
-        help="model to use (default: Qwen3-30B-A3B)",
+        choices=["gpt-oss-20b", "gpt-oss-120b"],
+        default="gpt-oss-20b",
+        help="model to use (default: gpt-oss-20b)",
     )
     parser.add_argument(
         "-p",
         "--prompt",
         default="Which is bigger, 9.9 or 9.11?",
-        help="user prompt text (default: 'Which is bigger, 9.9 or 9.11?')",
+        help="user prompt text",
     )
     parser.add_argument(
         "-t",
@@ -46,13 +46,8 @@ def parse_args():
         "-n",
         "--max-tokens",
         type=int,
-        default=1024,
-        help="max new tokens to generate (default: 1024)",
-    )
-    parser.add_argument(
-        "--thinking",
-        action="store_true",
-        help="enable thinking mode (default: off)",
+        default=4096,
+        help="max new tokens to generate (default: 4096)",
     )
     parser.add_argument(
         "-d",
@@ -75,7 +70,7 @@ def ensure_checkpoint(model_name: str, model_dir: Path):
     if (model_dir / "config.json").exists():
         return
 
-    hf_repo = f"Qwen/{model_name}"
+    hf_repo = f"openai/{model_name}"
     print(f"Checkpoint not found at {model_dir}")
     answer = input(f"Download {hf_repo}? [Y/n] ").strip().lower()
 
@@ -99,11 +94,11 @@ def ensure_checkpoint(model_name: str, model_dir: Path):
 
 def load_model(model_dir, device="auto"):
     """Load model, tokenizer, and config from a checkpoint directory."""
-    config = Qwen3MoEConfig.from_model_dir(model_dir)
-    tokenizer = Qwen3Tokenizer.from_model_dir(model_dir)
+    config = GPTOSSConfig.from_model_dir(model_dir)
+    tokenizer = GPTOSSTokenizer.from_model_dir(model_dir)
 
     with torch.device("meta"):
-        model = Qwen3MoEModel(config)
+        model = GPTOSSModel(config)
     load_weights(model, model_dir, dtype=config.dtype)
     # Recompute RoPE buffers (they were meta tensors during init)
     for module in model.modules():
@@ -125,13 +120,11 @@ def run_inference(
     max_tokens=1024,
     temperature=1.0,
     top_k=-1,
-    enable_thinking=False,
+    **kwargs,
 ):
     """Run inference and return decoded output text."""
     messages = [{"role": "user", "content": prompt}]
-    formatted = tokenizer.apply_chat_template(
-        messages, enable_thinking=enable_thinking
-    )
+    formatted = tokenizer.apply_chat_template(messages, **kwargs)
     token_ids = tokenizer.encode(formatted)
 
     with torch.no_grad():
@@ -157,7 +150,6 @@ def main():
 
     print(f"Model: {args.model}")
     print(f"Device: {next(model.parameters()).device}")
-    print(f"Thinking: {'on' if args.thinking else 'off'}")
     print("Generating...\n")
 
     start = time.time()
@@ -169,18 +161,14 @@ def main():
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         top_k=args.top_k,
-        enable_thinking=args.thinking,
     )
     elapsed = time.time() - start
 
-    # decode and print
+    formatted_prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": args.prompt}]
+    )
+    prompt_count = len(tokenizer.encode(formatted_prompt))
     token_count = len(tokenizer.encode(output_text))
-    prompt_count = len(tokenizer.encode(
-        tokenizer.apply_chat_template(
-            [{"role": "user", "content": args.prompt}],
-            enable_thinking=args.thinking,
-        )
-    ))
     new_tokens = token_count - prompt_count
     print(output_text)
     print(f"\n--- {new_tokens} tokens in {elapsed:.2f}s ({new_tokens/elapsed:.1f} tok/s) ---")

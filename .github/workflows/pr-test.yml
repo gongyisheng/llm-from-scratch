@@ -6,6 +6,7 @@ name: PR Test
 on:
   pull_request:
     types: [opened, labeled, synchronize]
+    paths: ['**/*.py']
   workflow_dispatch:
 
 concurrency:
@@ -24,6 +25,7 @@ jobs:
 
       has_qwen3_dense: ${{ steps.detect.outputs.has_qwen3_dense }}
       has_qwen3_moe: ${{ steps.detect.outputs.has_qwen3_moe }}
+      has_gpt_oss: ${{ steps.detect.outputs.has_gpt_oss }}
 
     steps:
       - name: Detect changed files
@@ -50,6 +52,11 @@ jobs:
             );
             core.setOutput('has_qwen3_moe', has_qwen3_moe);
 
+            const has_gpt_oss = filenames.some(f =>
+              ["gpt_oss/", "tests/gpt_oss/"].some(d => f.startsWith(d))
+            );
+            core.setOutput('has_gpt_oss', has_gpt_oss);
+
 
       - name: Add labels to PR
         if: github.event.action == 'synchronize'
@@ -64,6 +71,9 @@ jobs:
 
             if ('${{ steps.detect.outputs.has_qwen3_moe }}' === 'true')
               ciLabels.push('run-ci-qwen3-moe');
+
+            if ('${{ steps.detect.outputs.has_gpt_oss }}' === 'true')
+              ciLabels.push('run-ci-gpt-oss');
 
             if (ciLabels.length > 0) {
               await github.rest.issues.addLabels({
@@ -295,3 +305,77 @@ jobs:
 
       - name: Run tests
         run: uv run pytest tests/qwen3_moe/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cpu
+
+
+  knowledge-gpt-oss-cpu:
+    name: "CPU / knowledge-gpt-oss"
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.has_gpt_oss == 'true'
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-gpt-oss')
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["gpt-oss-20b"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Download checkpoint
+        run: |
+          persistent="${{ runner.tool_cache }}/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download openai/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest tests/gpt_oss/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cpu
+
+
+  accuracy-gpt-oss-cpu:
+    name: "CPU / accuracy-gpt-oss"
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.has_gpt_oss == 'true'
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-gpt-oss')
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["gpt-oss-20b"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Download checkpoint
+        run: |
+          persistent="${{ runner.tool_cache }}/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download openai/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
+
+      - name: Run tests
+        run: uv run pytest tests/gpt_oss/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cpu

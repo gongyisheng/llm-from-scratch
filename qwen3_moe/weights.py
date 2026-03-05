@@ -1,5 +1,8 @@
+import re
 from pathlib import Path
+
 import torch
+import torch.nn as nn
 from safetensors.torch import load_file
 
 # HF key -> model state_dict key
@@ -22,6 +25,11 @@ LAYER_KEY_MAP = {
     "mlp.gate.weight": "moe_ffn.router.proj.weight",
 }
 
+# Pattern for per-expert weight keys in safetensors checkpoints
+_EXPERT_RE = re.compile(
+    r"model\.layers\.(\d+)\.mlp\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight"
+)
+
 
 def rename_hf_key(hf_key: str) -> str | None:
     if hf_key in KEY_MAP:
@@ -38,31 +46,56 @@ def rename_hf_key(hf_key: str) -> str | None:
     if hf_suffix in LAYER_KEY_MAP:
         return f"layers.{layer_idx}.{LAYER_KEY_MAP[hf_suffix]}"
 
-    # MoE experts: mlp.experts.{j}.gate_proj.weight -> moe_ffn.experts.{j}.gate_proj.weight
-    if hf_suffix.startswith("mlp.experts."):
-        model_suffix = hf_suffix.replace("mlp.experts.", "moe_ffn.experts.", 1)
-        return f"layers.{layer_idx}.{model_suffix}"
-
+    # expert keys are fused into 3D tensors in load_weights
     return None
 
 
 def load_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None):
     model_dir = Path(model_dir)
     loaded = 0
+    expert_parts = {}  # {layer_idx: {(expert_idx, proj_type): tensor}}
+
     for f in sorted(model_dir.glob("*.safetensors")):
         shard = load_file(str(f))
         renamed = {}
         for hf_key, tensor in shard.items():
+            if dtype is not None:
+                tensor = tensor.to(dtype=dtype)
+
+            # expert weights: buffer for 3D fusion
+            m = _EXPERT_RE.match(hf_key)
+            if m:
+                layer_idx = int(m.group(1))
+                expert_idx = int(m.group(2))
+                proj_type = m.group(3)  # gate_proj, up_proj, or down_proj
+                expert_parts.setdefault(layer_idx, {})[(expert_idx, proj_type)] = tensor
+                loaded += 1
+                continue
+
             new_key = rename_hf_key(hf_key)
             if new_key is None:
                 print(f"skipping unknown key: {hf_key}")
                 continue
-            if dtype is not None:
-                tensor = tensor.to(dtype=dtype)
             renamed[new_key] = tensor
             loaded += 1
         model.load_state_dict(renamed, strict=False, assign=True)
         del shard, renamed
+
+    # fuse per-expert weights into 3D tensors (gate_up_proj, down_proj)
+    for layer_idx in sorted(expert_parts):
+        parts = expert_parts[layer_idx]
+        block = model.layers[layer_idx].moe_ffn
+        gate_up = torch.stack([
+            torch.cat([parts[(j, "gate_proj")], parts[(j, "up_proj")]], dim=0)
+            for j in range(block.n_experts)
+        ])  # (n_experts, 2 * moe_hidden_dim, emb_dim)
+        down = torch.stack([
+            parts[(j, "down_proj")] for j in range(block.n_experts)
+        ])  # (n_experts, emb_dim, moe_hidden_dim)
+        block.gate_up_proj = nn.Parameter(gate_up)
+        block.down_proj = nn.Parameter(down)
+    del expert_parts
+
     # assign=True replaces Parameter objects, breaking weight tying.
     # Re-tie lm_head to tok_emb when the checkpoint omits lm_head.weight.
     if hasattr(model, "lm_head") and hasattr(model, "tok_emb"):
@@ -79,4 +112,3 @@ if __name__ == "__main__":
     with torch.device("meta"):
         model = Qwen3MoEModel(config)
     load_weights(model, _root / "checkpoints/Qwen3-30B-A3B", dtype=config.dtype)
-

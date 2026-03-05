@@ -9,6 +9,11 @@
         'src_dirs': ['qwen3_moe/', 'tests/qwen3_moe/'],
         'exclude_dirs': [],
     },
+    'gpt_oss': {
+        'label': 'run-ci-gpt-oss',
+        'src_dirs': ['gpt_oss/', 'tests/gpt_oss/'],
+        'exclude_dirs': [],
+    },
 } -%>
 
 <%- set test_jobs = {
@@ -17,36 +22,56 @@
         'device': 'cpu',
         'test_file': 'tests/qwen3/test_knowledge.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B', 'Qwen3-8B', 'Qwen3-14B', 'Qwen3-32B'],
+        'hf_org': 'Qwen',
     },
     'knowledge-qwen3-dense-cuda': {
         'family': 'qwen3_dense',
         'device': 'cuda',
         'test_file': 'tests/qwen3/test_knowledge.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
+        'hf_org': 'Qwen',
     },
     'accuracy-qwen3-dense-cpu': {
         'family': 'qwen3_dense',
         'device': 'cpu',
         'test_file': 'tests/qwen3/test_accuracy.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B', 'Qwen3-8B', 'Qwen3-14B', 'Qwen3-32B'],
+        'hf_org': 'Qwen',
     },
     'accuracy-qwen3-dense-cuda': {
         'family': 'qwen3_dense',
         'device': 'cuda',
         'test_file': 'tests/qwen3/test_accuracy.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
+        'hf_org': 'Qwen',
     },
     'knowledge-qwen3-moe-cpu': {
         'family': 'qwen3_moe',
         'device': 'cpu',
         'test_file': 'tests/qwen3_moe/test_knowledge.py',
         'models': ['Qwen3-30B-A3B'],
+        'hf_org': 'Qwen',
     },
     'accuracy-qwen3-moe-cpu': {
         'family': 'qwen3_moe',
         'device': 'cpu',
         'test_file': 'tests/qwen3_moe/test_accuracy.py',
         'models': ['Qwen3-30B-A3B'],
+        'hf_org': 'Qwen',
+    },
+    'knowledge-gpt-oss-cpu': {
+        'family': 'gpt_oss',
+        'device': 'cpu',
+        'test_file': 'tests/gpt_oss/test_knowledge.py',
+        'models': ['gpt-oss-20b'],
+        'hf_org': 'openai',
+    },
+    'accuracy-gpt-oss-cpu': {
+        'family': 'gpt_oss',
+        'device': 'cpu',
+        'test_file': 'tests/gpt_oss/test_accuracy.py',
+        'models': ['gpt-oss-20b'],
+        'hf_org': 'openai',
     },
 } -%>
 
@@ -55,6 +80,7 @@ name: PR Test
 on:
   pull_request:
     types: [opened, labeled, synchronize]
+    paths: ['**/*.py']
   workflow_dispatch:
 
 concurrency:
@@ -144,7 +170,7 @@ jobs:
         run: |
           persistent="${{ runner.tool_cache }}/huggingface/${{ matrix.model }}"
           if [ ! -f "$persistent/config.json" ]; then
-            uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
+            uv run hf download << config.hf_org >>/${{ matrix.model }} --local-dir "$persistent"
           fi
           mkdir -p checkpoints
           ln -sfn "$persistent" checkpoints/${{ matrix.model }}

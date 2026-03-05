@@ -11,11 +11,10 @@ from qwen3.model import Qwen3Model
 from qwen3.weights import load_weights
 from qwen3.generate import generate
 
-SUPPORTED_MODELS = {
-    "Qwen3-0.6B": "Qwen/Qwen3-0.6B",
-    "Qwen3-1.7B": "Qwen/Qwen3-1.7B",
-    "Qwen3-4B": "Qwen/Qwen3-4B",
-}
+SUPPORTED_MODELS = [
+    "Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-4B",
+    "Qwen3-8B", "Qwen3-14B", "Qwen3-32B",
+]
 
 
 def parse_args():
@@ -25,7 +24,7 @@ def parse_args():
     parser.add_argument(
         "-m",
         "--model",
-        choices=list(SUPPORTED_MODELS.keys()),
+        choices=SUPPORTED_MODELS,
         default="Qwen3-0.6B",
         help="model to use (default: Qwen3-0.6B)",
     )
@@ -33,7 +32,7 @@ def parse_args():
         "-p",
         "--prompt",
         default="Which is bigger, 9.9 or 9.11?",
-        help="user prompt text (default: 'Hello, who are you?')",
+        help="user prompt text (default: 'Which is bigger, 9.9 or 9.11?')",
     )
     parser.add_argument(
         "-t",
@@ -82,7 +81,7 @@ def ensure_checkpoint(model_name: str, model_dir: Path):
     if (model_dir / "config.json").exists():
         return
 
-    hf_repo = SUPPORTED_MODELS[model_name]
+    hf_repo = f"Qwen/{model_name}"
     print(f"Checkpoint not found at {model_dir}")
     answer = input(f"Download {hf_repo}? [Y/n] ").strip().lower()
 

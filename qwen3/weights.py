@@ -13,15 +13,15 @@ KEY_MAP = {
 LAYER_KEY_MAP = {
     "input_layernorm.weight": "norm1.weight",
     "post_attention_layernorm.weight": "norm2.weight",
-    "self_attn.q_proj.weight": "attn.W_q.weight",
-    "self_attn.k_proj.weight": "attn.W_k.weight",
-    "self_attn.v_proj.weight": "attn.W_v.weight",
-    "self_attn.o_proj.weight": "attn.W_o.weight",
+    "self_attn.q_proj.weight": "attn.q_proj.weight",
+    "self_attn.k_proj.weight": "attn.k_proj.weight",
+    "self_attn.v_proj.weight": "attn.v_proj.weight",
+    "self_attn.o_proj.weight": "attn.o_proj.weight",
     "self_attn.q_norm.weight": "attn.q_norm.weight",
     "self_attn.k_norm.weight": "attn.k_norm.weight",
-    "mlp.gate_proj.weight": "ffn.W_gate.weight",
-    "mlp.up_proj.weight": "ffn.W_up.weight",
-    "mlp.down_proj.weight": "ffn.W_down.weight",
+    "mlp.gate_proj.weight": "ffn.gate_proj.weight",
+    "mlp.up_proj.weight": "ffn.up_proj.weight",
+    "mlp.down_proj.weight": "ffn.down_proj.weight",
 }
 
 

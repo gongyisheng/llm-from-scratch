@@ -149,6 +149,11 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
         t_hf_load = t_hf_infer = 0.0
         hf_results = [{"prompt_ids": pid} for pid in all_prompt_ids]
 
+    # Wait for rank 0 to finish HF cleanup before loading scratch model,
+    # otherwise rank 1 loads its shard while rank 0's full HF model is still on GPU.
+    if dist.is_initialized():
+        dist.barrier()
+
     # Step 2: Scratch model
     _print(f"\n[Step 2/3] Scratch model ({model_name}, {device})")
 

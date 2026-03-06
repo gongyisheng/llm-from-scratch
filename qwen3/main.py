@@ -128,7 +128,7 @@ def load_parallel_model(model_dir, device=None):
     """Load parallel model, tokenizer, and config."""
     from qwen3.model import ParallelQwen3Model
     from qwen3.weights import load_parallel_weights
-    from parallel import get_world_size
+    from parallel.comm import get_world_size
 
     config = Qwen3Config.from_model_dir(model_dir)
     tokenizer = Qwen3Tokenizer.from_model_dir(model_dir)
@@ -179,7 +179,7 @@ def run_inference(
 
 
 def main():
-    from parallel import init_process_group, destroy_process_group, get_rank, get_world_size
+    from parallel.comm import init_process_group, destroy_process_group, get_rank, get_world_size
     import torch.distributed as dist
 
     args = parse_args()

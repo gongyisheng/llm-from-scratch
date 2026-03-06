@@ -1,14 +1,21 @@
 """Shared accuracy test runner: greedy decode must match HuggingFace transformers."""
 
 import gc
+import sys
 import time
 
 import pytest
 import torch
+import torch.distributed as dist
 from tqdm import tqdm
 
 from parallel.comm import get_rank
 from tests.utils import CHECKPOINTS_DIR, _print, checkpoint_available
+
+
+def _nccl_available() -> bool:
+    """True when distributed is initialized with the NCCL backend."""
+    return dist.is_initialized() and dist.get_backend() == "nccl"
 
 
 def hf_greedy_decode(model, prompt_ids, max_new_tokens):
@@ -71,37 +78,58 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
     transformers = pytest.importorskip("transformers")
 
     model_dir = CHECKPOINTS_DIR / model_name
+    rank = get_rank()
 
-    # Step 1: HF baseline
+    # Step 1: HF baseline (rank 0 only — avoids OOM when ranks share a GPU)
     _print(f"\n[Step 1/3] HF model ({model_name}, {device})")
 
-    t0 = time.perf_counter()
     hf_tokenizer = transformers.AutoTokenizer.from_pretrained(str(model_dir))
-    hf_model = transformers.AutoModelForCausalLM.from_pretrained(
-        str(model_dir), dtype=torch.bfloat16, attn_implementation="eager",
-        device_map=device,
-    )
-    hf_model.requires_grad_(False)
-    # Force loop-based expert forward (not grouped_mm) to match scratch implementation
-    if hasattr(hf_model.config, "_experts_implementation"):
-        hf_model.config._experts_implementation = None
-    t_hf_load = time.perf_counter() - t0
-    _print(f"\n  Load Model: {t_hf_load:.2f}s")
+    all_prompt_ids = [hf_tokenizer.encode(p) for p in prompts]
 
     hf_results = []
-    t0 = time.perf_counter()
-    with torch.no_grad():
-        for prompt in tqdm(prompts, desc="  HF inference", disable=get_rank() != 0):
-            prompt_ids = hf_tokenizer.encode(prompt)
-            tokens, lps = hf_greedy_decode(hf_model, prompt_ids, max_new_tokens)
-            hf_results.append({"prompt_ids": prompt_ids, "tokens": tokens, "logprobs": lps})
-    t_hf_infer = time.perf_counter() - t0
-    _print(f"\n  Inference: {t_hf_infer:.2f}s")
+    if _nccl_available():
+        # NCCL: all ranks load HF with TP (same sharding as scratch → exact match)
+        mismatch_expected = False
+        load_hf = True
+        load_kwargs = dict(torch_dtype=torch.bfloat16, attn_implementation="eager", tp_plan="auto")
+        load_label = "Load Model (TP)"
+    elif rank == 0:
+        # gloo or non-distributed: rank 0 only
+        load_hf = True
+        load_kwargs = dict(dtype=torch.bfloat16, attn_implementation="eager", device_map=device)
+        load_label = "Load Model"
+    else:
+        load_hf = False
 
-    del hf_model
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    if load_hf:
+        t0 = time.perf_counter()
+        # HF TP redirects non-rank-0 stdout/stderr to /dev/null; save and restore
+        saved_stdout, saved_stderr = sys.stdout, sys.stderr
+        hf_model = transformers.AutoModelForCausalLM.from_pretrained(
+            str(model_dir), **load_kwargs,
+        )
+        sys.stdout, sys.stderr = saved_stdout, saved_stderr
+        hf_model.requires_grad_(False)
+        if hasattr(hf_model.config, "_experts_implementation"):
+            hf_model.config._experts_implementation = None
+        t_hf_load = time.perf_counter() - t0
+        _print(f"\n  {load_label}: {t_hf_load:.2f}s")
+
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            for i, prompt in enumerate(tqdm(prompts, desc="  HF inference", disable=rank != 0)):
+                tokens, lps = hf_greedy_decode(hf_model, all_prompt_ids[i], max_new_tokens)
+                hf_results.append({"prompt_ids": all_prompt_ids[i], "tokens": tokens, "logprobs": lps})
+        t_hf_infer = time.perf_counter() - t0
+        _print(f"\n  Inference: {t_hf_infer:.2f}s")
+
+        del hf_model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    else:
+        t_hf_load = t_hf_infer = 0.0
+        hf_results = [{"prompt_ids": pid} for pid in all_prompt_ids]
 
     # Step 2: Scratch model
     _print(f"\n[Step 2/3] Scratch model ({model_name}, {device})")
@@ -122,8 +150,11 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
     t_scratch_infer = time.perf_counter() - t0
     _print(f"  Inference: {t_scratch_infer:.2f}s")
 
-    # Step 3: Compare
+    # Step 3: Compare (rank 0 only — it has the HF reference results)
     _print("\n[Step 3/3] Comparing results")
+
+    if rank != 0:
+        return
 
     mismatches = []
     for i, prompt in enumerate(prompts):

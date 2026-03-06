@@ -427,6 +427,43 @@ jobs:
         run: PYTHONPATH=. uv run torchrun --nproc_per_node=2 -m pytest tests/qwen3/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cpu
 
 
+  knowledge-tp-qwen3-dense-cuda:
+    name: "NVIDIA / knowledge-tp-qwen3-dense"
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.has_parallel == 'true'
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-parallel')
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-4B"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Download checkpoint
+        run: |
+          persistent="${{ runner.tool_cache }}/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
+
+      - name: Run tests
+        run: PYTHONPATH=. uv run torchrun --nproc_per_node=2 -m pytest tests/qwen3/test_knowledge.py -m slow -v -s --model ${{ matrix.model }} --device cuda
+
+
   accuracy-tp-qwen3-dense-cpu:
     name: "CPU / accuracy-tp-qwen3-dense"
     needs: prepare
@@ -462,3 +499,40 @@ jobs:
 
       - name: Run tests
         run: PYTHONPATH=. uv run torchrun --nproc_per_node=2 -m pytest tests/qwen3/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cpu
+
+
+  accuracy-tp-qwen3-dense-cuda:
+    name: "NVIDIA / accuracy-tp-qwen3-dense"
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.has_parallel == 'true'
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-parallel')
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-4B"]
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Download checkpoint
+        run: |
+          persistent="${{ runner.tool_cache }}/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download Qwen/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
+
+      - name: Run tests
+        run: PYTHONPATH=. uv run torchrun --nproc_per_node=2 -m pytest tests/qwen3/test_accuracy.py -m slow -v -s --model ${{ matrix.model }} --device cuda

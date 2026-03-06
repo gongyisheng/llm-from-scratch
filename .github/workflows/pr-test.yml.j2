@@ -78,6 +78,15 @@
 <%- set tp_jobs = {
     'knowledge-tp-qwen3-dense-cpu': {
         'family': 'parallel',
+        'device': 'cpu',
+        'test_file': 'tests/qwen3/test_knowledge.py',
+        'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
+        'hf_org': 'Qwen',
+        'nproc': 2,
+    },
+    'knowledge-tp-qwen3-dense-cuda': {
+        'family': 'parallel',
+        'device': 'cuda',
         'test_file': 'tests/qwen3/test_knowledge.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
         'hf_org': 'Qwen',
@@ -85,6 +94,15 @@
     },
     'accuracy-tp-qwen3-dense-cpu': {
         'family': 'parallel',
+        'device': 'cpu',
+        'test_file': 'tests/qwen3/test_accuracy.py',
+        'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
+        'hf_org': 'Qwen',
+        'nproc': 2,
+    },
+    'accuracy-tp-qwen3-dense-cuda': {
+        'family': 'parallel',
+        'device': 'cuda',
         'test_file': 'tests/qwen3/test_accuracy.py',
         'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
         'hf_org': 'Qwen',
@@ -206,7 +224,7 @@ jobs:
 <% for job_name, config in tp_jobs.items() %>
 
   << job_name >>:
-    name: "CPU / << job_name | replace('-cpu', '') >>"
+    name: "<% if config.device == 'cuda' %>NVIDIA<% else %>CPU<% endif %> / << job_name | replace('-' ~ config.device, '') >>"
     needs: prepare
     if: >-
       needs.prepare.outputs.has_<< config.family >> == 'true'
@@ -239,5 +257,5 @@ jobs:
           ln -sfn "$persistent" checkpoints/${{ matrix.model }}
 
       - name: Run tests
-        run: PYTHONPATH=. uv run torchrun --nproc_per_node=<< config.nproc >> -m pytest << config.test_file >> -m slow -v -s --model ${{ matrix.model }} --device cpu
+        run: PYTHONPATH=. uv run torchrun --nproc_per_node=<< config.nproc >> -m pytest << config.test_file >> -m slow -v -s --model ${{ matrix.model }} --device << config.device >>
 <% endfor %>

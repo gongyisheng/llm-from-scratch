@@ -66,6 +66,49 @@ def load_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None)
             model.lm_head.weight = model.tok_emb.weight
 
 
+# for tensor parallel
+from parallel.tensor import shard_tensor
+
+COLUMN_PARALLEL_SUFFIXES = (
+    "q_proj.weight", 
+    "k_proj.weight", 
+    "v_proj.weight",
+    "gate_proj.weight",
+    "up_proj.weight",
+    "tok_emb.weight",
+    "lm_head.weight",
+)
+
+ROW_PARALLEL_SUFFIXES = ("o_proj.weight", "down_proj.weight")
+
+def load_parallel_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None):
+    model_dir = Path(model_dir)
+    loaded = 0
+    for f in sorted(model_dir.glob("*.safetensors")):
+        shard = load_file(str(f))
+        renamed = {}
+        for hf_key, tensor in shard.items():
+            new_key = rename_hf_key(hf_key)
+            if new_key is None:
+                print(f"skipping unknown key: {hf_key}")
+                continue
+            if new_key.endswith(COLUMN_PARALLEL_SUFFIXES):
+                tensor = shard_tensor(tensor, 0)
+            elif new_key.endswith(ROW_PARALLEL_SUFFIXES):
+                tensor = shard_tensor(tensor, 1)
+            if dtype is not None:
+                tensor = tensor.to(dtype=dtype)
+            renamed[new_key] = tensor
+            loaded += 1
+        model.load_state_dict(renamed, strict=False, assign=True)
+        del shard, renamed
+    # assign=True replaces Parameter objects, breaking weight tying.
+    # Re-tie lm_head to tok_emb when the checkpoint omits lm_head.weight.
+    if hasattr(model, "lm_head") and hasattr(model, "tok_emb"):
+        if model.lm_head.weight.is_meta and not model.tok_emb.weight.is_meta:
+            model.lm_head.weight = model.tok_emb.weight
+
+
 if __name__ == "__main__":
     from qwen3.config import Qwen3Config
     from qwen3.model import Qwen3Model

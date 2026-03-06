@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -123,6 +124,30 @@ def load_model(model_dir, device="auto"):
     return model, tokenizer, config
 
 
+def load_parallel_model(model_dir, device=None):
+    """Load parallel model, tokenizer, and config."""
+    from qwen3.model import ParallelQwen3Model
+    from qwen3.weights import load_parallel_weights
+    from parallel import get_world_size
+
+    config = Qwen3Config.from_model_dir(model_dir)
+    tokenizer = Qwen3Tokenizer.from_model_dir(model_dir)
+
+    with torch.device("meta"):
+        model = ParallelQwen3Model(config)
+    load_parallel_weights(model, model_dir, dtype=config.dtype)
+    for module in model.modules():
+        if hasattr(module, "_build_buffers"):
+            module._build_buffers()
+    model.eval()
+
+    # move to assigned GPU (set by init_process_group via LOCAL_RANK)
+    if torch.cuda.is_available() and torch.cuda.device_count() >= get_world_size():
+        model = model.to(torch.cuda.current_device())
+
+    return model, tokenizer, config
+
+
 def run_inference(
     model,
     tokenizer,
@@ -154,17 +179,29 @@ def run_inference(
 
 
 def main():
+    from parallel import init_process_group, destroy_process_group, get_rank, get_world_size
+    import torch.distributed as dist
+
     args = parse_args()
+
+    # torchrun sets RANK env var — init distributed if present
+    if "RANK" in os.environ:
+        init_process_group()
 
     model_dir = Path(__file__).resolve().parent.parent / "checkpoints" / args.model
     ensure_checkpoint(args.model, model_dir)
 
-    model, tokenizer, config = load_model(model_dir, device=args.device)
+    if dist.is_initialized():
+        model, tokenizer, config = load_parallel_model(model_dir)
+    else:
+        model, tokenizer, config = load_model(model_dir, device=args.device)
 
-    print(f"Model: {args.model}")
-    print(f"Device: {next(model.parameters()).device}")
-    print(f"Thinking: {'on' if args.thinking else 'off'}")
-    print("Generating...\n")
+    if get_rank() == 0:
+        print(f"Model: {args.model}")
+        print(f"Device: {next(model.parameters()).device}")
+        print(f"World size: {get_world_size()}")
+        print(f"Thinking: {'on' if args.thinking else 'off'}")
+        print("Generating...\n")
 
     start = time.time()
     output_text = run_inference(
@@ -179,17 +216,20 @@ def main():
     )
     elapsed = time.time() - start
 
-    # decode and print
-    token_count = len(tokenizer.encode(output_text))
-    prompt_count = len(tokenizer.encode(
-        tokenizer.apply_chat_template(
-            [{"role": "user", "content": args.prompt}],
-            enable_thinking=args.thinking,
-        )
-    ))
-    new_tokens = token_count - prompt_count
-    print(output_text)
-    print(f"\n--- {new_tokens} tokens in {elapsed:.2f}s ({new_tokens/elapsed:.1f} tok/s) ---")
+    if get_rank() == 0:
+        token_count = len(tokenizer.encode(output_text))
+        prompt_count = len(tokenizer.encode(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": args.prompt}],
+                enable_thinking=args.thinking,
+            )
+        ))
+        new_tokens = token_count - prompt_count
+        print(output_text)
+        print(f"\n--- {new_tokens} tokens in {elapsed:.2f}s ({new_tokens/elapsed:.1f} tok/s) ---")
+
+    if dist.is_initialized():
+        destroy_process_group()
 
 
 if __name__ == "__main__":

@@ -1,10 +1,14 @@
 """Token-level accuracy: greedy decode must match HuggingFace transformers."""
 
 import pytest
-
-from qwen3.main import load_model
+import torch.distributed as dist
 
 from tests.accuracy_runner import run_accuracy_test
+
+if dist.is_initialized():
+    from qwen3.main import load_parallel_model as load_model
+else:
+    from qwen3.main import load_model
 
 PROMPTS = [
     "The capital of France is",
@@ -20,4 +24,7 @@ PROMPTS = [
 @pytest.mark.slow
 def test_accuracy(model_name, device):
     """Greedy generation must match HuggingFace transformers token-for-token."""
-    run_accuracy_test(model_name, device, load_model, PROMPTS)
+    run_accuracy_test(
+        model_name, device, load_model, PROMPTS,
+        mismatch_expected=dist.is_initialized(),
+    )

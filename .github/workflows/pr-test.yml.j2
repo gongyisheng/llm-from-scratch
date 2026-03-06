@@ -75,6 +75,23 @@
     },
 } -%>
 
+<%- set tp_jobs = {
+    'knowledge-tp-qwen3-dense-cpu': {
+        'family': 'parallel',
+        'test_file': 'tests/qwen3/test_knowledge.py',
+        'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
+        'hf_org': 'Qwen',
+        'nproc': 2,
+    },
+    'accuracy-tp-qwen3-dense-cpu': {
+        'family': 'parallel',
+        'test_file': 'tests/qwen3/test_accuracy.py',
+        'models': ['Qwen3-0.6B', 'Qwen3-1.7B', 'Qwen3-4B'],
+        'hf_org': 'Qwen',
+        'nproc': 2,
+    },
+} -%>
+
 name: PR Test
 
 on:
@@ -99,6 +116,7 @@ jobs:
 <% for name in model_families %>
       has_<< name >>: ${{ steps.detect.outputs.has_<< name >> }}
 <%- endfor %>
+      has_parallel: ${{ steps.detect.outputs.has_parallel }}
 
     steps:
       - name: Detect changed files
@@ -120,6 +138,10 @@ jobs:
             );
             core.setOutput('has_<< name >>', has_<< name >>);
 <% endfor %>
+            const has_parallel = filenames.some(f =>
+              ["parallel/"].some(d => f.startsWith(d))
+            ) || has_qwen3_dense;
+            core.setOutput('has_parallel', has_parallel);
 
       - name: Add labels to PR
         if: github.event.action == 'synchronize'
@@ -132,6 +154,9 @@ jobs:
             if ('${{ steps.detect.outputs.has_<< name >> }}' === 'true')
               ciLabels.push('<< config.label >>');
 <% endfor %>
+            if ('${{ steps.detect.outputs.has_parallel }}' === 'true')
+              ciLabels.push('run-ci-parallel');
+
             if (ciLabels.length > 0) {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
@@ -177,4 +202,42 @@ jobs:
 
       - name: Run tests
         run: uv run pytest << config.test_file >> -m slow -v -s --model ${{ matrix.model }} --device << config.device >>
+<% endfor %>
+<% for job_name, config in tp_jobs.items() %>
+
+  << job_name >>:
+    name: "CPU / << job_name | replace('-cpu', '') >>"
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.has_<< config.family >> == 'true'
+      || contains(github.event.pull_request.labels.*.name, 'run-ci-parallel')
+    runs-on: [self-hosted]
+    strategy:
+      fail-fast: false
+      matrix:
+        model: << config.models | tojson >>
+    env:
+      HF_HOME: /media/hdddisk/.cache/huggingface
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.head_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Download checkpoint
+        run: |
+          persistent="${{ runner.tool_cache }}/huggingface/${{ matrix.model }}"
+          if [ ! -f "$persistent/config.json" ]; then
+            uv run hf download << config.hf_org >>/${{ matrix.model }} --local-dir "$persistent"
+          fi
+          mkdir -p checkpoints
+          ln -sfn "$persistent" checkpoints/${{ matrix.model }}
+
+      - name: Run tests
+        run: PYTHONPATH=. uv run torchrun --nproc_per_node=<< config.nproc >> -m pytest << config.test_file >> -m slow -v -s --model ${{ matrix.model }} --device cpu
 <% endfor %>

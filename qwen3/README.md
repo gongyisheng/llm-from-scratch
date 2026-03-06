@@ -187,6 +187,35 @@ Map HuggingFace weight names to your model's state dict keys. HuggingFace stores
 4. **Prefill + decode** with per-sequence EOS tracking
 5. Batch output is semantically correct (bf16 rounding may cause minor token-level divergence from single-sequence)
 
+## Tensor Parallelism
+
+Split model weights across multiple ranks using `torchrun`. Each rank holds a shard of the Q/K/V/O projections, FFN gate/up/down matrices, and LM head. Communication uses `all_reduce` (after row-parallel layers) and `all_gather` (to reconstruct full logits).
+
+```bash
+# Multi-GPU: each rank gets its own GPU (uses nccl backend)
+torchrun --nproc_per_node=2 -m qwen3.main -m Qwen3-8B -p "Hello"
+
+# Single GPU or CPU-only: falls back to gloo backend automatically
+torchrun --nproc_per_node=2 -m qwen3.main -m Qwen3-0.6B -p "Hello"
+```
+
+Backend auto-detection:
+- **nccl** when `torch.cuda.device_count() >= world_size` (one GPU per rank)
+- **gloo** otherwise (single GPU or CPU-only)
+
+Parallel model files:
+```
+parallel/
+├── comm.py        # init_process_group, all_reduce, get_rank, get_world_size
+└── tensor.py      # ColumnParallelLinear, RowParallelLinear, VocabParallelEmbedding
+
+qwen3/
+├── model.py       # ParallelQwen3Model (sharded layers + all_gather on logits)
+└── weights.py     # load_parallel_weights (shard safetensors per rank)
+```
+
+Sampling stays in sync across ranks via `dist.broadcast(next_token, src=0)` after each `sample()` call in `generate.py`.
+
 ## Tests
 
 Run from the project root. Tests require downloaded checkpoints and `--model` flag.
@@ -197,6 +226,10 @@ uv run python -m pytest tests/qwen3/test_knowledge.py -m slow -v --model Qwen3-0
 
 # Accuracy tests: token-level match vs HuggingFace transformers
 uv run python -m pytest tests/qwen3/test_accuracy.py -m slow -v --model Qwen3-0.6B -s
+
+# Parallel tests (reuse the same test files under torchrun)
+PYTHONPATH=. uv run torchrun --nproc_per_node=2 -m pytest tests/qwen3/test_knowledge.py -m slow -v -s --model Qwen3-0.6B --device cpu
+PYTHONPATH=. uv run torchrun --nproc_per_node=2 -m pytest tests/qwen3/test_accuracy.py -m slow -v -s --model Qwen3-0.6B --device cpu
 ```
 
 ## Notes

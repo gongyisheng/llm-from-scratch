@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.distributed as dist
 
@@ -5,9 +6,31 @@ import torch.distributed as dist
 # world_size: total process num
 # backend: gloo(cpu tensor), nccl(gpu tensor)
 
-def init_process_group(rank: int, world_size: int, backend: str = "gloo"):
-    dist.init_process_group(backend=backend, rank=rank, world_size=world_size,
-                            init_method="tcp://127.0.0.1:29500")
+def init_process_group(backend: str = "auto"):
+    # torchrun sets RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT
+    rank = int(os.environ.get("RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+    if backend == "auto":
+        # nccl requires one GPU per rank
+        has_enough_gpus = (
+            torch.cuda.is_available()
+            and torch.cuda.device_count() >= world_size
+        )
+        backend = "nccl" if has_enough_gpus else "gloo"
+
+    master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+    master_port = os.environ.get("MASTER_PORT", "29500")
+
+    dist.init_process_group(
+        backend=backend, rank=rank, world_size=world_size,
+        init_method=f"tcp://{master_addr}:{master_port}",
+    )
+
+    # assign each rank to its own GPU (only when enough GPUs exist)
+    if torch.cuda.is_available() and torch.cuda.device_count() >= world_size:
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        torch.cuda.set_device(local_rank)
 
 
 def get_rank() -> int:

@@ -169,3 +169,97 @@ class TransformerBlock(nn.Module):
         x = x + residual
 
         return x, new_kv_cache
+
+
+# for tensor parallel
+
+from parallel.comm import get_world_size
+from parallel.tensor import ColumnParallelLinear, RowParallelLinear
+
+
+class ParallelGroupQueryAttention(nn.Module):
+    def __init__(self, emb_dim: int, n_heads: int, n_kv_groups: int, head_dim: int):
+        super().__init__()
+        self.emb_dim = emb_dim
+        self.head_dim = head_dim
+        self.world_size = get_world_size()
+        self.n_heads = n_heads // self.world_size
+        self.n_kv_groups = n_kv_groups // self.world_size
+
+        # parallel is handled inside parallellinear class
+        self.q_proj = ColumnParallelLinear(emb_dim, n_heads * head_dim, bias=False)
+        self.k_proj = ColumnParallelLinear(emb_dim, n_kv_groups * head_dim, bias=False)
+        self.v_proj = ColumnParallelLinear(emb_dim, n_kv_groups * head_dim, bias=False)
+        self.o_proj = RowParallelLinear(n_heads * head_dim, emb_dim, bias=False)
+
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
+    
+    def forward(self, x: torch.Tensor, rope: RoPE, position_ids: torch.Tensor, kv_cache = None, attn_mask = None) -> torch.Tensor:
+        batch, seq_len, _ = x.shape
+
+        # n_heads and n_kv_groups are LOCAL counts (already divided by world_size)
+        Q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2) # batch, local_heads, seq_len, head_dim
+        K = self.k_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2) # batch, local_kv_groups, seq_len, head_dim
+        V = self.v_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
+
+        Q = self.q_norm(Q)
+        K = self.k_norm(K)
+
+        Q = rope(Q, position_ids)
+        K = rope(K, position_ids)
+
+        if kv_cache is not None:
+            k_cache, v_cache = kv_cache
+            K = torch.concat([k_cache, K], dim=2) # batch, local_kv_groups, kv_len, head_dim
+            V = torch.concat([v_cache, V], dim=2)
+        new_kv_cache = (K, V)
+
+        K = K.repeat_interleave(self.n_heads // self.n_kv_groups, dim=1) # batch, local_heads, kv_len, head_dim
+        V = V.repeat_interleave(self.n_heads // self.n_kv_groups, dim=1)
+
+        attn_score = Q @ K.transpose(-2, -1) / self.head_dim ** 0.5
+        if attn_mask is not None:
+            attn_score += attn_mask
+        attn_score = F.softmax(attn_score, dim=-1, dtype=torch.float32).to(x.dtype)
+
+        output = attn_score @ V # batch, local_heads, q_len, head_dim
+        output = output.transpose(1, 2).reshape(batch, seq_len, -1) # batch, seq_len, local_heads * head_dim
+        output = self.o_proj(output) # all_reduce inside, output: batch, seq_len, emb_dim
+
+        return output, new_kv_cache
+
+
+class ParallelSwiGLUFFN(nn.Module):
+    def __init__(self, emb_dim: int, hidden_dim: int):
+        super().__init__()
+        self.gate_proj = ColumnParallelLinear(emb_dim, hidden_dim, bias=False)
+        self.up_proj = ColumnParallelLinear(emb_dim, hidden_dim, bias=False)
+        self.down_proj = RowParallelLinear(hidden_dim, emb_dim, bias=False)
+    
+    def forward(self, x: torch.Tensor):
+        gate = F.silu(self.gate_proj(x))
+        output = self.down_proj(gate * self.up_proj(x))
+        return output
+    
+
+class ParallelTransformersBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.norm1 = RMSNorm(config.emb_dim)
+        self.attn = ParallelGroupQueryAttention(config.emb_dim, config.n_heads, config.n_kv_groups, config.head_dim)
+        self.norm2 = RMSNorm(config.emb_dim)
+        self.ffn = ParallelSwiGLUFFN(config.emb_dim, config.hidden_dim)
+    
+    def forward(self, x: torch.Tensor, rope: RoPE, position_ids: torch.Tensor, kv_cache = None, attn_mask = None):
+        residual = x
+        x = self.norm1(x)
+        x, new_kv_cache = self.attn(x, rope, position_ids, kv_cache=kv_cache, attn_mask=attn_mask)
+        x += residual
+
+        residual = x
+        x = self.norm2(x)
+        x = self.ffn(x)
+        
+        x += residual
+        return x, new_kv_cache

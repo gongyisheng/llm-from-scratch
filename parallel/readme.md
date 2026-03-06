@@ -37,11 +37,11 @@ parallel/
 └── __init__.py    # empty
 
 qwen3/
-├── layers.py      # + ParallelGroupQueryAttention, ParallelSwiGLUFFN, ParallelTransformersBlock
-├── model.py       # + ParallelQwen3Model
-├── weights.py     # + load_parallel_weights
-├── generate.py    # + broadcast after sample() for parallel sync
-└── main.py        # + load_parallel_model, torchrun detection, unified flow
+├── layers.py      # SwiGLUFFN, GroupQueryAttention natively use Column/RowParallelLinear
+├── model.py       # Qwen3Model uses ParallelEmbedding + all_gather on logits
+├── weights.py     # load_weights shards tensors per rank via shard_tensor
+├── generate.py    # broadcast after sample() for parallel sync
+└── main.py        # torchrun detection, unified single/parallel flow
 ```
 
 ### Step 1: Communication Primitives (`parallel/comm.py`)

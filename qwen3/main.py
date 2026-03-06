@@ -126,13 +126,12 @@ def load_model(model_dir, device="auto"):
             module._build_buffers()
     model.eval()
 
-    # torchrun assigns each rank a GPU via LOCAL_RANK;
-    # current_device() returns that GPU so each rank lands on the right one.
-    # Without distributed, fall back to the user's device argument.
-    if dist.is_initialized() and torch.cuda.is_available():
+    device = resolve_device(device)
+    # Under torchrun with CUDA requested, place each rank on its assigned GPU.
+    # Respect explicit --device cpu even when distributed is initialized.
+    if dist.is_initialized() and device == "cuda":
         model = model.to(torch.cuda.current_device())
     else:
-        device = resolve_device(device)
         model = model.to(device=device)
 
     return model, tokenizer, config
@@ -177,7 +176,11 @@ def main():
         init_process_group()
 
     model_dir = Path(__file__).resolve().parent.parent / "checkpoints" / args.model
-    ensure_checkpoint(args.model, model_dir)
+    # Only rank 0 prompts for download; other ranks wait at the barrier.
+    if get_rank() == 0:
+        ensure_checkpoint(args.model, model_dir)
+    if dist.is_initialized():
+        dist.barrier()
 
     model, tokenizer, config = load_model(model_dir, device=args.device)
 

@@ -134,6 +134,9 @@ def generate_batch(
     next_tokens = sample(logits[:, -1, :], temperature=temperature, top_k=top_k)
     if next_tokens.dim() == 1:
         next_tokens = next_tokens.unsqueeze(1)
+    # broadcast so all ranks use the same tokens (sampling is stochastic)
+    if dist.is_initialized():
+        dist.broadcast(next_tokens, src=0)
 
     generated = [[next_tokens[i].item()] for i in range(batch_size)]
     finished = [False] * batch_size
@@ -171,6 +174,8 @@ def generate_batch(
         next_tokens = sample(logits[:, -1, :], temperature=temperature, top_k=top_k)
         if next_tokens.dim() == 1:
             next_tokens = next_tokens.unsqueeze(1)
+        if dist.is_initialized():
+            dist.broadcast(next_tokens, src=0)
 
         for i in range(batch_size):
             if not finished[i]:

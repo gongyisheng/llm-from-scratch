@@ -35,8 +35,13 @@ class RowParallelLinear(nn.Module):
         self.bias = nn.Parameter(torch.empty(out_features,)) if bias else None
 
     def forward(self, x):
-        out = F.linear(x, self.weight, self.bias)
+        # Bias must be added AFTER all_reduce, not before.
+        # Each rank holds the same (replicated) bias, so adding it before
+        # all_reduce would sum it world_size times.
+        out = F.linear(x, self.weight)
         out = all_reduce(out)
+        if self.bias is not None:
+            out = out + self.bias
         return out
 
 

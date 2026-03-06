@@ -27,10 +27,10 @@ def init_process_group(backend: str = "auto"):
         init_method=f"tcp://{master_addr}:{master_port}",
     )
 
-    # assign each rank to its own GPU (only when enough GPUs exist)
-    if torch.cuda.is_available() and torch.cuda.device_count() >= world_size:
+    # assign each rank to a GPU (wraps around when sharing GPUs)
+    if torch.cuda.is_available():
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        torch.cuda.set_device(local_rank)
+        torch.cuda.set_device(local_rank % torch.cuda.device_count())
 
 
 def get_rank() -> int:

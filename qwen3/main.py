@@ -142,7 +142,7 @@ def load_parallel_model(model_dir, device=None):
     model.eval()
 
     # move to assigned GPU (set by init_process_group via LOCAL_RANK)
-    if torch.cuda.is_available() and torch.cuda.device_count() >= get_world_size():
+    if torch.cuda.is_available():
         model = model.to(torch.cuda.current_device())
 
     return model, tokenizer, config

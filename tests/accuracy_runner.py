@@ -1,7 +1,6 @@
 """Shared accuracy test runner: greedy decode must match HuggingFace transformers."""
 
 import gc
-import os
 import sys
 import time
 
@@ -19,7 +18,7 @@ def _nccl_available() -> bool:
     return dist.is_initialized() and dist.get_backend() == "nccl"
 
 
-def hf_greedy_decode(model, prompt_ids, max_new_tokens):
+def hf_greedy_decode(model, prompt_ids, max_new_tokens, eos_token_ids=()):
     device = next(model.parameters()).device
     input_ids = torch.tensor([prompt_ids], device=device)
 
@@ -31,6 +30,8 @@ def hf_greedy_decode(model, prompt_ids, max_new_tokens):
     lps = [torch.log_softmax(last.float(), dim=-1)[nid].item()]
 
     for _ in range(max_new_tokens - 1):
+        if nid in eos_token_ids:
+            break
         inp = torch.tensor([[tokens[-1]]], device=device)
         out = model(inp, past_key_values=cache, use_cache=True)
         last = out.logits[0, -1, :]
@@ -42,7 +43,7 @@ def hf_greedy_decode(model, prompt_ids, max_new_tokens):
     return tokens, lps
 
 
-def scratch_greedy_decode(model, prompt_ids, max_new_tokens):
+def scratch_greedy_decode(model, prompt_ids, max_new_tokens, eos_token_ids=()):
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
     input_ids = torch.tensor([prompt_ids], device=device)
@@ -61,6 +62,8 @@ def scratch_greedy_decode(model, prompt_ids, max_new_tokens):
     lps = [torch.log_softmax(last.float(), dim=-1)[nid].item()]
 
     for step in range(max_new_tokens - 1):
+        if nid in eos_token_ids:
+            break
         inp = torch.tensor([[tokens[-1]]], device=device)
         pos = torch.tensor([[len(prompt_ids) + step]], device=device)
         logits, cache = model(inp, pos, cache)
@@ -85,6 +88,12 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
     _print(f"\n[Step 1/3] HF model ({model_name}, {device})")
 
     hf_tokenizer = transformers.AutoTokenizer.from_pretrained(str(model_dir))
+    gen_config = transformers.GenerationConfig.from_pretrained(str(model_dir))
+    eos_ids = gen_config.eos_token_id
+    if isinstance(eos_ids, int):
+        eos_ids = [eos_ids]
+    eos_token_ids = set(eos_ids)
+
     all_prompt_ids = [
         hf_tokenizer.apply_chat_template(
             [{"role": "user", "content": p}],
@@ -109,15 +118,15 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
 
     if load_hf:
         t0 = time.perf_counter()
-        # Suppress duplicate tqdm progress on non-rank-0 (tqdm writes to stderr);
-        # also restore after from_pretrained (HF TP redirects to /dev/null)
+        # Suppress per-shard tqdm bars (multi-shard models produce interleaved output);
+        # also save/restore stdout/stderr (HF TP redirects non-rank-0 to /dev/null)
+        transformers.utils.logging.disable_progress_bar()
         saved_stdout, saved_stderr = sys.stdout, sys.stderr
-        if rank != 0:
-            sys.stderr = open(os.devnull, "w")
         hf_model = transformers.AutoModelForCausalLM.from_pretrained(
             str(model_dir), **load_kwargs,
         )
         sys.stdout, sys.stderr = saved_stdout, saved_stderr
+        transformers.utils.logging.enable_progress_bar()
         hf_model.requires_grad_(False)
         if hasattr(hf_model.config, "_experts_implementation"):
             hf_model.config._experts_implementation = None
@@ -127,7 +136,7 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
         t0 = time.perf_counter()
         with torch.no_grad():
             for i, prompt in enumerate(tqdm(prompts, desc="  HF inference", disable=rank != 0)):
-                tokens, lps = hf_greedy_decode(hf_model, all_prompt_ids[i], max_new_tokens)
+                tokens, lps = hf_greedy_decode(hf_model, all_prompt_ids[i], max_new_tokens, eos_token_ids)
                 hf_results.append({"prompt_ids": all_prompt_ids[i], "tokens": tokens, "logprobs": lps})
         t_hf_infer = time.perf_counter() - t0
         _print(f"\n  Inference: {t_hf_infer:.2f}s")
@@ -161,7 +170,7 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
     with torch.no_grad():
         for pid in tqdm(scratch_prompt_ids, desc="  Scratch inference", disable=rank != 0):
             tokens, lps = scratch_greedy_decode(
-                scratch_model, pid, max_new_tokens,
+                scratch_model, pid, max_new_tokens, eos_token_ids,
             )
             scratch_results.append({"tokens": tokens, "logprobs": lps})
     t_scratch_infer = time.perf_counter() - t0
@@ -178,10 +187,12 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
         hf = hf_results[i]
         scratch = scratch_results[i]
 
-        diffs = [abs(hf["logprobs"][s] - scratch["logprobs"][s]) for s in range(max_new_tokens)]
+        n_tokens = min(len(hf["tokens"]), len(scratch["tokens"]))
+        diffs = [abs(hf["logprobs"][s] - scratch["logprobs"][s]) for s in range(n_tokens)]
         string_match = hf["tokens"] == scratch["tokens"]
 
         _print(f"\n  Prompt[{i}]: {prompt!r}")
+        _print(f"    Generated tokens: {n_tokens}")
         _print(f"    Max LogProb Diff: {max(diffs):.6f}")
         _print(f"    Mean LogProb Diff: {sum(diffs)/len(diffs):.6f}")
         _print(f"    String Match: {'YES' if string_match else 'NO'}")
@@ -195,7 +206,7 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
                 f"  Scratch: {hf_tokenizer.decode(scratch['tokens'])!r}"
             )
         elif max(diffs) >= logprob_atol:
-            worst = max(range(max_new_tokens), key=lambda s: diffs[s])
+            worst = max(range(n_tokens), key=lambda s: diffs[s])
             mismatches.append(
                 f"Logprob diff at step {worst} for '{prompt}': "
                 f"HF={hf['logprobs'][worst]:.6f}, Scratch={scratch['logprobs'][worst]:.6f}, "

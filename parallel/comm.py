@@ -1,6 +1,9 @@
 import torch
 import torch.distributed as dist
 
+# rank: process num
+# world_size: total process num
+# backend: gloo(cpu tensor), nccl(gpu tensor)
 
 def init_process_group(rank: int, world_size: int, backend: str = "gloo"):
     dist.init_process_group(backend=backend, rank=rank, world_size=world_size,

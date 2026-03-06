@@ -1,6 +1,7 @@
 """Shared accuracy test runner: greedy decode must match HuggingFace transformers."""
 
 import gc
+import os
 import sys
 import time
 
@@ -84,7 +85,12 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
     _print(f"\n[Step 1/3] HF model ({model_name}, {device})")
 
     hf_tokenizer = transformers.AutoTokenizer.from_pretrained(str(model_dir))
-    all_prompt_ids = [hf_tokenizer.encode(p) for p in prompts]
+    all_prompt_ids = [
+        hf_tokenizer.apply_chat_template(
+            [{"role": "user", "content": p}],
+            add_generation_prompt=True, enable_thinking=False, return_dict=False,
+        ) for p in prompts
+    ]
 
     hf_results = []
     if _nccl_available():
@@ -103,8 +109,11 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
 
     if load_hf:
         t0 = time.perf_counter()
-        # HF TP redirects non-rank-0 stdout/stderr to /dev/null; save and restore
+        # Suppress duplicate tqdm progress on non-rank-0 (tqdm writes to stderr);
+        # also restore after from_pretrained (HF TP redirects to /dev/null)
         saved_stdout, saved_stderr = sys.stdout, sys.stderr
+        if rank != 0:
+            sys.stderr = open(os.devnull, "w")
         hf_model = transformers.AutoModelForCausalLM.from_pretrained(
             str(model_dir), **load_kwargs,
         )
@@ -135,16 +144,24 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
     _print(f"\n[Step 2/3] Scratch model ({model_name}, {device})")
 
     t0 = time.perf_counter()
-    scratch_model, _, _ = load_model_fn(model_dir, device=device)
+    scratch_model, scratch_tokenizer, _ = load_model_fn(model_dir, device=device)
     t_scratch_load = time.perf_counter() - t0
     _print(f"  Load: {t_scratch_load:.2f}s")
+
+    scratch_prompt_ids = [
+        scratch_tokenizer.encode(
+            scratch_tokenizer.apply_chat_template(
+                [{"role": "user", "content": p}],
+            )
+        ) for p in prompts
+    ]
 
     scratch_results = []
     t0 = time.perf_counter()
     with torch.no_grad():
-        for hf in tqdm(hf_results, desc="  Scratch inference", disable=get_rank() != 0):
+        for pid in tqdm(scratch_prompt_ids, desc="  Scratch inference", disable=rank != 0):
             tokens, lps = scratch_greedy_decode(
-                scratch_model, hf["prompt_ids"], max_new_tokens,
+                scratch_model, pid, max_new_tokens,
             )
             scratch_results.append({"tokens": tokens, "logprobs": lps})
     t_scratch_infer = time.perf_counter() - t0

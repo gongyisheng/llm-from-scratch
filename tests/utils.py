@@ -5,7 +5,15 @@ from pathlib import Path
 
 import torch
 
+from parallel.comm import get_rank
+
 CHECKPOINTS_DIR = Path(__file__).resolve().parent.parent / "checkpoints"
+
+
+def _print(*args, **kwargs):
+    """Print only on rank 0."""
+    if get_rank() == 0:
+        print(*args, **kwargs)
 
 
 def checkpoint_available(model_name: str) -> bool:
@@ -51,7 +59,7 @@ def get_model(model_name: str, device: str, load_model_fn):
     model_dir = CHECKPOINTS_DIR / model_name
     t0 = time.perf_counter()
     result = load_model_fn(model_dir, device=device)
-    print(f"\n  Load Model: {time.perf_counter() - t0:.2f}s")
+    _print(f"\n  Load Model: {time.perf_counter() - t0:.2f}s")
 
     _model_cache[cache_key] = result
     return result
@@ -64,5 +72,5 @@ def infer(model_name: str, device: str, prompt: str, load_model_fn, run_inferenc
         model, tokenizer, config, prompt,
         max_tokens=1024, temperature=0, enable_thinking=True, **kwargs,
     )
-    print(f"\n  Inference: {time.perf_counter() - t0:.2f}s")
+    _print(f"\n  Inference: {time.perf_counter() - t0:.2f}s")
     return result

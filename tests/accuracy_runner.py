@@ -7,7 +7,8 @@ import pytest
 import torch
 from tqdm import tqdm
 
-from tests.utils import CHECKPOINTS_DIR, checkpoint_available
+from parallel.comm import get_rank
+from tests.utils import CHECKPOINTS_DIR, _print, checkpoint_available
 
 
 def hf_greedy_decode(model, prompt_ids, max_new_tokens):
@@ -72,7 +73,7 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
     model_dir = CHECKPOINTS_DIR / model_name
 
     # Step 1: HF baseline
-    print(f"\n[Step 1/3] HF model ({model_name}, {device})")
+    _print(f"\n[Step 1/3] HF model ({model_name}, {device})")
 
     t0 = time.perf_counter()
     hf_tokenizer = transformers.AutoTokenizer.from_pretrained(str(model_dir))
@@ -85,17 +86,17 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
     if hasattr(hf_model.config, "_experts_implementation"):
         hf_model.config._experts_implementation = None
     t_hf_load = time.perf_counter() - t0
-    print(f"\n  Load Model: {t_hf_load:.2f}s")
+    _print(f"\n  Load Model: {t_hf_load:.2f}s")
 
     hf_results = []
     t0 = time.perf_counter()
     with torch.no_grad():
-        for prompt in tqdm(prompts, desc="  HF inference"):
+        for prompt in tqdm(prompts, desc="  HF inference", disable=get_rank() != 0):
             prompt_ids = hf_tokenizer.encode(prompt)
             tokens, lps = hf_greedy_decode(hf_model, prompt_ids, max_new_tokens)
             hf_results.append({"prompt_ids": prompt_ids, "tokens": tokens, "logprobs": lps})
     t_hf_infer = time.perf_counter() - t0
-    print(f"\n  Inference: {t_hf_infer:.2f}s")
+    _print(f"\n  Inference: {t_hf_infer:.2f}s")
 
     del hf_model
     gc.collect()
@@ -103,26 +104,26 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
         torch.cuda.empty_cache()
 
     # Step 2: Scratch model
-    print(f"\n[Step 2/3] Scratch model ({model_name}, {device})")
+    _print(f"\n[Step 2/3] Scratch model ({model_name}, {device})")
 
     t0 = time.perf_counter()
     scratch_model, _, _ = load_model_fn(model_dir, device=device)
     t_scratch_load = time.perf_counter() - t0
-    print(f"  Load: {t_scratch_load:.2f}s")
+    _print(f"  Load: {t_scratch_load:.2f}s")
 
     scratch_results = []
     t0 = time.perf_counter()
     with torch.no_grad():
-        for hf in tqdm(hf_results, desc="  Scratch inference"):
+        for hf in tqdm(hf_results, desc="  Scratch inference", disable=get_rank() != 0):
             tokens, lps = scratch_greedy_decode(
                 scratch_model, hf["prompt_ids"], max_new_tokens,
             )
             scratch_results.append({"tokens": tokens, "logprobs": lps})
     t_scratch_infer = time.perf_counter() - t0
-    print(f"  Inference: {t_scratch_infer:.2f}s")
+    _print(f"  Inference: {t_scratch_infer:.2f}s")
 
     # Step 3: Compare
-    print("\n[Step 3/3] Comparing results")
+    _print("\n[Step 3/3] Comparing results")
 
     mismatches = []
     for i, prompt in enumerate(prompts):
@@ -132,12 +133,12 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
         diffs = [abs(hf["logprobs"][s] - scratch["logprobs"][s]) for s in range(max_new_tokens)]
         string_match = hf["tokens"] == scratch["tokens"]
 
-        print(f"\n  Prompt[{i}]: {prompt!r}")
-        print(f"    Max LogProb Diff: {max(diffs):.6f}")
-        print(f"    Mean LogProb Diff: {sum(diffs)/len(diffs):.6f}")
-        print(f"    String Match: {'YES' if string_match else 'NO'}")
-        print(f"    HF:      {hf_tokenizer.decode(hf['tokens'])!r}")
-        print(f"    Scratch: {hf_tokenizer.decode(scratch['tokens'])!r}")
+        _print(f"\n  Prompt[{i}]: {prompt!r}")
+        _print(f"    Max LogProb Diff: {max(diffs):.6f}")
+        _print(f"    Mean LogProb Diff: {sum(diffs)/len(diffs):.6f}")
+        _print(f"    String Match: {'YES' if string_match else 'NO'}")
+        _print(f"    HF:      {hf_tokenizer.decode(hf['tokens'])!r}")
+        _print(f"    Scratch: {hf_tokenizer.decode(scratch['tokens'])!r}")
 
         if not string_match:
             mismatches.append(
@@ -154,13 +155,13 @@ def run_accuracy_test(model_name, device, load_model_fn, prompts, max_new_tokens
             )
 
     # Timing summary
-    print("\n  Timing summary:")
-    print(f"    HF      — load: {t_hf_load:.2f}s, inference: {t_hf_infer:.2f}s")
-    print(f"    Scratch — load: {t_scratch_load:.2f}s, inference: {t_scratch_infer:.2f}s")
+    _print("\n  Timing summary:")
+    _print(f"    HF      — load: {t_hf_load:.2f}s, inference: {t_hf_infer:.2f}s")
+    _print(f"    Scratch — load: {t_scratch_load:.2f}s, inference: {t_scratch_infer:.2f}s")
 
     if mismatch_expected:
         if mismatches:
-            print(f"\n  [{len(mismatches)} mismatch(es) found, expected due to kernel differences]")
+            _print(f"\n  [{len(mismatches)} mismatch(es) found, expected due to kernel differences]")
         return
 
     assert not mismatches, "\n".join(mismatches)

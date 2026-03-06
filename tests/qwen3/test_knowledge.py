@@ -1,14 +1,8 @@
 import pytest
-import torch.distributed as dist
 
-from qwen3.main import run_inference
+from qwen3.main import load_model, run_inference
 from qwen3.generate import generate_batch
 from tests.knowledge_runner import run_single_prompt_test, run_thinking_test, run_batch_test
-
-if dist.is_initialized():
-    from qwen3.main import load_parallel_model as load_model
-else:
-    from qwen3.main import load_model
 
 slow = pytest.mark.slow
 

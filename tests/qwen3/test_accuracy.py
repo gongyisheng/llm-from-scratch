@@ -3,12 +3,8 @@
 import pytest
 import torch.distributed as dist
 
+from qwen3.main import load_model
 from tests.accuracy_runner import run_accuracy_test
-
-if dist.is_initialized():
-    from qwen3.main import load_parallel_model as load_model
-else:
-    from qwen3.main import load_model
 
 PROMPTS = [
     "The capital of France is",

@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from parallel.comm import get_world_size
+from parallel.tensor import ColumnParallelLinear, RowParallelLinear
+
 
 class RMSNorm(nn.Module):
     # root-mean-square layer normalization
@@ -59,9 +62,9 @@ class RoPE(nn.Module):
 class SwiGLUFFN(nn.Module):
     def __init__(self, emb_dim, hidden_dim):
         super().__init__()
-        self.gate_proj = nn.Linear(emb_dim, hidden_dim, bias=False)
-        self.up_proj = nn.Linear(emb_dim, hidden_dim, bias=False)
-        self.down_proj = nn.Linear(hidden_dim, emb_dim, bias=False)
+        self.gate_proj = ColumnParallelLinear(emb_dim, hidden_dim, bias=False)
+        self.up_proj = ColumnParallelLinear(emb_dim, hidden_dim, bias=False)
+        self.down_proj = RowParallelLinear(hidden_dim, emb_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x.shape: (batch, seq_len, emb_dim)
@@ -79,11 +82,14 @@ class GroupQueryAttention(nn.Module):
         self.n_heads = n_heads
         self.n_kv_groups = n_kv_groups
         self.head_dim = head_dim
+        world_size = get_world_size()
+        self.n_heads = n_heads // world_size
+        self.n_kv_groups = n_kv_groups // world_size
 
-        self.q_proj = nn.Linear(self.emb_dim, self.n_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(self.emb_dim, self.n_kv_groups * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(self.emb_dim, self.n_kv_groups * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.n_heads * self.head_dim, self.emb_dim, bias=False)
+        self.q_proj = ColumnParallelLinear(emb_dim, n_heads * head_dim, bias=False)
+        self.k_proj = ColumnParallelLinear(emb_dim, n_kv_groups * head_dim, bias=False)
+        self.v_proj = ColumnParallelLinear(emb_dim, n_kv_groups * head_dim, bias=False)
+        self.o_proj = RowParallelLinear(n_heads * head_dim, emb_dim, bias=False)
 
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
@@ -100,17 +106,14 @@ class GroupQueryAttention(nn.Module):
         batch, seq_len, _ = x.shape
 
         # projection + reshape to [batch, heads, seq, head_dim]
+        # n_heads and n_kv_groups are local counts (already divided by world_size)
         Q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         K = self.k_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
         V = self.v_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
 
-        # Q/K norm (reshape to [batch*heads, seq, head_dim] for RMSNorm, then back)
-        # attention logits can explode, need norm
-        Q = self.q_norm(Q.reshape(-1, seq_len, self.head_dim))
-        Q = Q.view(batch, self.n_heads, seq_len, self.head_dim)
-
-        K = self.k_norm(K.reshape(-1, seq_len, self.head_dim))
-        K = K.view(batch, self.n_kv_groups, seq_len, self.head_dim)
+        # Q/K norm: attention logits can explode, need norm
+        Q = self.q_norm(Q)
+        K = self.k_norm(K)
 
         # apply rope
         Q = rope(Q, position_ids)
@@ -118,7 +121,7 @@ class GroupQueryAttention(nn.Module):
 
         if kv_cache is not None:
             past_k, past_v = kv_cache
-            # q shape: (batch, n_head, seq_len(prompt_len or 1), head_dim)
+            # q shape: (batch, n_heads, seq_len(prompt_len or 1), head_dim)
             # kv shape: (batch, n_kv_groups, seq_len_so_far, head_dim)
             K = torch.concat([past_k, K], dim=2)
             V = torch.concat([past_v, V], dim=2)
@@ -168,98 +171,4 @@ class TransformerBlock(nn.Module):
         x = self.ffn(x)
         x = x + residual
 
-        return x, new_kv_cache
-
-
-# for tensor parallel
-
-from parallel.comm import get_world_size
-from parallel.tensor import ColumnParallelLinear, RowParallelLinear
-
-
-class ParallelGroupQueryAttention(nn.Module):
-    def __init__(self, emb_dim: int, n_heads: int, n_kv_groups: int, head_dim: int):
-        super().__init__()
-        self.emb_dim = emb_dim
-        self.head_dim = head_dim
-        self.world_size = get_world_size()
-        self.n_heads = n_heads // self.world_size
-        self.n_kv_groups = n_kv_groups // self.world_size
-
-        # parallel is handled inside parallellinear class
-        self.q_proj = ColumnParallelLinear(emb_dim, n_heads * head_dim, bias=False)
-        self.k_proj = ColumnParallelLinear(emb_dim, n_kv_groups * head_dim, bias=False)
-        self.v_proj = ColumnParallelLinear(emb_dim, n_kv_groups * head_dim, bias=False)
-        self.o_proj = RowParallelLinear(n_heads * head_dim, emb_dim, bias=False)
-
-        self.q_norm = RMSNorm(self.head_dim)
-        self.k_norm = RMSNorm(self.head_dim)
-    
-    def forward(self, x: torch.Tensor, rope: RoPE, position_ids: torch.Tensor, kv_cache = None, attn_mask = None) -> torch.Tensor:
-        batch, seq_len, _ = x.shape
-
-        # n_heads and n_kv_groups are LOCAL counts (already divided by world_size)
-        Q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2) # batch, local_heads, seq_len, head_dim
-        K = self.k_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2) # batch, local_kv_groups, seq_len, head_dim
-        V = self.v_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
-
-        Q = self.q_norm(Q)
-        K = self.k_norm(K)
-
-        Q = rope(Q, position_ids)
-        K = rope(K, position_ids)
-
-        if kv_cache is not None:
-            k_cache, v_cache = kv_cache
-            K = torch.concat([k_cache, K], dim=2) # batch, local_kv_groups, kv_len, head_dim
-            V = torch.concat([v_cache, V], dim=2)
-        new_kv_cache = (K, V)
-
-        K = K.repeat_interleave(self.n_heads // self.n_kv_groups, dim=1) # batch, local_heads, kv_len, head_dim
-        V = V.repeat_interleave(self.n_heads // self.n_kv_groups, dim=1)
-
-        attn_score = Q @ K.transpose(-2, -1) / self.head_dim ** 0.5
-        if attn_mask is not None:
-            attn_score += attn_mask
-        attn_score = F.softmax(attn_score, dim=-1, dtype=torch.float32).to(x.dtype)
-
-        output = attn_score @ V # batch, local_heads, q_len, head_dim
-        output = output.transpose(1, 2).reshape(batch, seq_len, -1) # batch, seq_len, local_heads * head_dim
-        output = self.o_proj(output) # all_reduce inside, output: batch, seq_len, emb_dim
-
-        return output, new_kv_cache
-
-
-class ParallelSwiGLUFFN(nn.Module):
-    def __init__(self, emb_dim: int, hidden_dim: int):
-        super().__init__()
-        self.gate_proj = ColumnParallelLinear(emb_dim, hidden_dim, bias=False)
-        self.up_proj = ColumnParallelLinear(emb_dim, hidden_dim, bias=False)
-        self.down_proj = RowParallelLinear(hidden_dim, emb_dim, bias=False)
-    
-    def forward(self, x: torch.Tensor):
-        gate = F.silu(self.gate_proj(x))
-        output = self.down_proj(gate * self.up_proj(x))
-        return output
-    
-
-class ParallelTransformersBlock(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.norm1 = RMSNorm(config.emb_dim)
-        self.attn = ParallelGroupQueryAttention(config.emb_dim, config.n_heads, config.n_kv_groups, config.head_dim)
-        self.norm2 = RMSNorm(config.emb_dim)
-        self.ffn = ParallelSwiGLUFFN(config.emb_dim, config.hidden_dim)
-    
-    def forward(self, x: torch.Tensor, rope: RoPE, position_ids: torch.Tensor, kv_cache = None, attn_mask = None):
-        residual = x
-        x = self.norm1(x)
-        x, new_kv_cache = self.attn(x, rope, position_ids, kv_cache=kv_cache, attn_mask=attn_mask)
-        x += residual
-
-        residual = x
-        x = self.norm2(x)
-        x = self.ffn(x)
-        
-        x += residual
         return x, new_kv_cache

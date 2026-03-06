@@ -5,6 +5,14 @@ import time
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
+
+from parallel.comm import (
+    init_process_group, 
+    destroy_process_group, 
+    get_rank, 
+    get_world_size
+)
 
 from qwen3.config import Qwen3Config
 from qwen3.tokenizer import Qwen3Tokenizer
@@ -118,32 +126,14 @@ def load_model(model_dir, device="auto"):
             module._build_buffers()
     model.eval()
 
-    device = resolve_device(device)
-    model = model.to(device=device)
-
-    return model, tokenizer, config
-
-
-def load_parallel_model(model_dir, device=None):
-    """Load parallel model, tokenizer, and config."""
-    from qwen3.model import ParallelQwen3Model
-    from qwen3.weights import load_parallel_weights
-    from parallel.comm import get_world_size
-
-    config = Qwen3Config.from_model_dir(model_dir)
-    tokenizer = Qwen3Tokenizer.from_model_dir(model_dir)
-
-    with torch.device("meta"):
-        model = ParallelQwen3Model(config)
-    load_parallel_weights(model, model_dir, dtype=config.dtype)
-    for module in model.modules():
-        if hasattr(module, "_build_buffers"):
-            module._build_buffers()
-    model.eval()
-
-    # move to assigned GPU (set by init_process_group via LOCAL_RANK)
-    if torch.cuda.is_available():
+    # torchrun assigns each rank a GPU via LOCAL_RANK;
+    # current_device() returns that GPU so each rank lands on the right one.
+    # Without distributed, fall back to the user's device argument.
+    if dist.is_initialized() and torch.cuda.is_available():
         model = model.to(torch.cuda.current_device())
+    else:
+        device = resolve_device(device)
+        model = model.to(device=device)
 
     return model, tokenizer, config
 
@@ -179,8 +169,6 @@ def run_inference(
 
 
 def main():
-    from parallel.comm import init_process_group, destroy_process_group, get_rank, get_world_size
-    import torch.distributed as dist
 
     args = parse_args()
 
@@ -191,10 +179,7 @@ def main():
     model_dir = Path(__file__).resolve().parent.parent / "checkpoints" / args.model
     ensure_checkpoint(args.model, model_dir)
 
-    if dist.is_initialized():
-        model, tokenizer, config = load_parallel_model(model_dir)
-    else:
-        model, tokenizer, config = load_model(model_dir, device=args.device)
+    model, tokenizer, config = load_model(model_dir, device=args.device)
 
     if get_rank() == 0:
         print(f"Model: {args.model}")

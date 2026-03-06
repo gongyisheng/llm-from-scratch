@@ -1,24 +1,12 @@
-# Tensor Parallelism Implementation Guide
+# Tensor Parallelism
 
-Step-by-step guide to add tensor parallelism for **Qwen3**, **Qwen3-MoE**, and **GPT-OSS** models.
+Step-by-step guide covering what was implemented for **Qwen3** and what's planned for **Qwen3-MoE** and **GPT-OSS**.
 
 ## Background
 
-### What We Have
-
-```
-parallel/
-  comm.py          # init_process_group, get_rank, get_world_size, all_reduce
-  tensor.py        # ColumnParallelLinear, RowParallelLinear
-  __init__.py
-```
-
-- **ColumnParallelLinear**: splits OUTPUT dim across ranks. Weight: `(out_features // world_size, in_features)`. No communication in forward.
-- **RowParallelLinear**: splits INPUT dim across ranks. Weight: `(out_features, in_features // world_size)`. `all_reduce` in forward.
-
 ### Core Principle
 
-Tensor parallelism always pairs **Column -> Row**:
+Tensor parallelism always pairs **Column → Row**:
 - Column splits the output (each rank computes a slice)
 - Row recombines via all_reduce (each rank gets the full result)
 
@@ -38,191 +26,173 @@ Output (replicated on all ranks)
 
 ---
 
-## Step 1: Add VocabParallelEmbedding to `parallel/tensor.py`
+## Qwen3 (Done)
 
-The embedding table can be huge (vocab_size * emb_dim). Split vocab across ranks.
+### File Structure
+
+```
+parallel/
+├── comm.py        # init_process_group, get_rank, get_world_size, all_reduce, destroy_process_group
+├── tensor.py      # ColumnParallelLinear, RowParallelLinear, ParallelEmbedding, shard_tensor
+└── __init__.py    # empty
+
+qwen3/
+├── layers.py      # + ParallelGroupQueryAttention, ParallelSwiGLUFFN, ParallelTransformersBlock
+├── model.py       # + ParallelQwen3Model
+├── weights.py     # + load_parallel_weights
+├── generate.py    # + broadcast after sample() for parallel sync
+└── main.py        # + load_parallel_model, torchrun detection, unified flow
+```
+
+### Step 1: Communication Primitives (`parallel/comm.py`)
 
 ```python
-class VocabParallelEmbedding(nn.Module):
-    """Embedding with vocab split across ranks.
-
-    Each rank stores vocab_size // world_size rows.
-    Tokens outside this rank's range produce zeros; all_reduce combines.
-    """
-    def __init__(self, vocab_size, emb_dim, world_size=1):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.emb_dim = emb_dim
-        self.world_size = world_size
-        self.vocab_per_rank = vocab_size // world_size
-        self.rank = get_rank()
-        self.vocab_start = self.rank * self.vocab_per_rank
-        self.vocab_end = self.vocab_start + self.vocab_per_rank
-        self.weight = nn.Parameter(torch.empty(self.vocab_per_rank, emb_dim))
-
-    def forward(self, token_ids):
-        mask = (token_ids >= self.vocab_start) & (token_ids < self.vocab_end)
-        local_ids = (token_ids - self.vocab_start).clamp(0, self.vocab_per_rank - 1)
-        output = F.embedding(local_ids, self.weight)
-        output = output * mask.unsqueeze(-1)  # zero out tokens not on this rank
-        if self.world_size > 1:
-            all_reduce(output)
-        return output
+def init_process_group(backend: str = "auto"):
+    # reads RANK, WORLD_SIZE, MASTER_ADDR, MASTER_PORT from env (set by torchrun)
+    # backend="auto": nccl if device_count >= world_size, else gloo
+    # assigns each rank to its own GPU via LOCAL_RANK when enough GPUs exist
 ```
 
-Export it from `parallel/__init__.py`.
+Key functions: `init_process_group`, `get_rank`, `get_world_size`, `all_reduce`, `destroy_process_group`.
 
----
+Backend auto-detection:
+- **nccl** when `torch.cuda.device_count() >= world_size` (one GPU per rank)
+- **gloo** otherwise (single GPU or CPU-only; nccl requires one GPU per rank)
 
-## Step 2: Qwen3 Parallel Model
+### Step 2: Parallel Tensor Primitives (`parallel/tensor.py`)
 
-### 2.1 Create `qwen3/parallel_layers.py`
-
-The key insight: identify every `nn.Linear` and decide Column vs Row.
-
-#### Attention (GroupQueryAttention)
-
-```
-x (replicated)
-  |
-  q_proj: ColumnParallel  (emb_dim -> n_heads * head_dim)     -- split heads across ranks
-  k_proj: ColumnParallel  (emb_dim -> n_kv_groups * head_dim) -- split kv groups across ranks
-  v_proj: ColumnParallel  (emb_dim -> n_kv_groups * head_dim) -- split kv groups across ranks
-  |
-  [rope, attention computation -- each rank works on its head slice]
-  |
-  o_proj: RowParallel      (n_heads * head_dim -> emb_dim)    -- all_reduce to recombine
-  |
-x (replicated)
-```
-
-What changes:
-- `n_heads` becomes `n_heads // world_size` on each rank
-- `n_kv_groups` becomes `n_kv_groups // world_size` on each rank
-- `q_norm`, `k_norm` stay the same (they operate per-head, head_dim unchanged)
-- The `.view()` reshape uses local head counts
-
+**ColumnParallelLinear** — splits output dim across ranks, no communication:
 ```python
-class ParallelGroupQueryAttention(nn.Module):
-    def __init__(self, emb_dim, n_heads, n_kv_groups, head_dim, world_size=1):
-        super().__init__()
-        self.emb_dim = emb_dim
-        self.n_heads = n_heads // world_size        # LOCAL head count
-        self.n_kv_groups = n_kv_groups // world_size  # LOCAL kv group count
-        self.head_dim = head_dim
-        self.world_size = world_size
-
-        self.q_proj = ColumnParallelLinear(emb_dim, n_heads * head_dim, world_size, bias=False)
-        self.k_proj = ColumnParallelLinear(emb_dim, n_kv_groups * head_dim, world_size, bias=False)
-        self.v_proj = ColumnParallelLinear(emb_dim, n_kv_groups * head_dim, world_size, bias=False)
-        self.o_proj = RowParallelLinear(n_heads * head_dim, emb_dim, world_size, bias=False)
-
-        self.q_norm = RMSNorm(head_dim)
-        self.k_norm = RMSNorm(head_dim)
-
-    def forward(self, x, rope, position_ids, kv_cache=None, attn_mask=None):
-        batch, seq_len, _ = x.shape
-
-        # These use LOCAL head counts in reshape
-        Q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        K = self.k_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
-        V = self.v_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
-
-        # q_norm, k_norm, rope, kv_cache, attention -- same logic, just fewer heads per rank
-        # ... (same as original, using self.n_heads and self.n_kv_groups)
-
-        context = context.transpose(1, 2).reshape(batch, seq_len, -1)
-        output = self.o_proj(context)  # all_reduce happens inside
-        return output, new_kv_cache
-```
-
-**Constraint**: `n_heads % world_size == 0` and `n_kv_groups % world_size == 0`.
-
-#### FFN (SwiGLUFFN)
-
-```
-x (replicated)
-  |
-  gate_proj: ColumnParallel  (emb_dim -> hidden_dim)  -- split hidden across ranks
-  up_proj:   ColumnParallel  (emb_dim -> hidden_dim)  -- split hidden across ranks
-  |
-  silu(gate) * up  -- element-wise on split hidden
-  |
-  down_proj: RowParallel     (hidden_dim -> emb_dim)  -- all_reduce to recombine
-  |
-x (replicated)
-```
-
-```python
-class ParallelSwiGLUFFN(nn.Module):
-    def __init__(self, emb_dim, hidden_dim, world_size=1):
-        super().__init__()
-        self.gate_proj = ColumnParallelLinear(emb_dim, hidden_dim, world_size, bias=False)
-        self.up_proj = ColumnParallelLinear(emb_dim, hidden_dim, world_size, bias=False)
-        self.down_proj = RowParallelLinear(hidden_dim, emb_dim, world_size, bias=False)
-
+class ColumnParallelLinear(nn.Module):
+    # weight shape: (out_features // world_size, in_features)
+    # gets world_size from get_world_size() at init time
     def forward(self, x):
-        gate = F.silu(self.gate_proj(x))
-        output = self.down_proj(gate * self.up_proj(x))
-        return output
+        return F.linear(x, self.weight, self.bias)
 ```
 
-#### TransformerBlock
-
+**RowParallelLinear** — splits input dim across ranks, all_reduce in forward:
 ```python
-class ParallelTransformerBlock(nn.Module):
-    def __init__(self, config, world_size=1):
-        super().__init__()
-        self.norm1 = RMSNorm(config.emb_dim)
-        self.attn = ParallelGroupQueryAttention(
-            config.emb_dim, config.n_heads, config.n_kv_groups, config.head_dim, world_size
-        )
-        self.norm2 = RMSNorm(config.emb_dim)
-        self.ffn = ParallelSwiGLUFFN(config.emb_dim, config.hidden_dim, world_size)
-
-    def forward(self, x, rope, position_ids, kv_cache=None, attn_mask=None):
-        # same residual pattern as original
-        ...
+class RowParallelLinear(nn.Module):
+    # weight shape: (out_features, in_features // world_size)
+    def forward(self, x):
+        return all_reduce(F.linear(x, self.weight, self.bias))
 ```
 
-### 2.2 Create `qwen3/parallel_model.py`
-
+**ParallelEmbedding** — splits vocab rows across ranks:
 ```python
-class ParallelQwen3Model(nn.Module):
-    def __init__(self, config, world_size=1):
-        super().__init__()
-        self.tok_emb = VocabParallelEmbedding(config.vocab_size, config.emb_dim, world_size)
-        self.rope = RoPE(config.head_dim, config.rope_base, config.context_length)
-        self.layers = nn.ModuleList([
-            ParallelTransformerBlock(config, world_size) for _ in range(config.n_layers)
-        ])
-        self.final_norm = RMSNorm(config.emb_dim)
-        # lm_head: ColumnParallel to split vocab output, gather later
-        self.lm_head = ColumnParallelLinear(config.emb_dim, config.vocab_size, world_size, bias=False)
-
-    def forward(self, token_ids, position_ids=None, kv_cache=None, attn_mask=None):
-        # same as original
-        ...
-        logits = self.lm_head(x)  # (batch, seq, vocab_size // world_size)
-        return logits, new_kv_caches
+class ParallelEmbedding(nn.Module):
+    # each rank stores vocab_size // world_size rows
+    # tokens outside this rank's range produce zeros; all_reduce combines
+    def forward(self, x):
+        mask = (x >= self.start) & (x < self.end)
+        local_ids = (x - self.start).clamp(0, self.embd_per_rank - 1)
+        output = F.embedding(local_ids, self.weight) * mask.unsqueeze(-1)
+        return all_reduce(output)
 ```
 
-Note: `lm_head` outputs `vocab_size // world_size`. During generation, each rank computes argmax on its slice, then coordinate across ranks to find the global argmax (or gather the full logits).
-
-### 2.3 Create `qwen3/parallel_weights.py`
-
-Each rank loads ALL safetensors but only keeps its shard. The key change is **slicing weights** during loading.
-
+**shard_tensor** — slice a tensor along any dim for the current rank:
 ```python
-def shard_weight(tensor, dim, rank, world_size):
-    """Slice tensor along dim for this rank."""
-    size = tensor.shape[dim]
-    shard_size = size // world_size
-    start = rank * shard_size
+def shard_tensor(tensor, dim):
+    # uses get_rank() and get_world_size() internally
     return tensor.narrow(dim, start, shard_size).contiguous()
 ```
 
-Weight loading rules for each key:
+### Step 3: Parallel Layers (`qwen3/layers.py`)
+
+Added at the bottom of the existing `layers.py` file (not a separate file).
+
+**ParallelGroupQueryAttention**:
+```
+x (replicated)
+  |
+  q_proj: ColumnParallel  -- split heads across ranks
+  k_proj: ColumnParallel  -- split kv groups across ranks
+  v_proj: ColumnParallel  -- split kv groups across ranks
+  |
+  [q_norm, k_norm, rope, kv_cache, attention — each rank works on its local heads]
+  |
+  o_proj: RowParallel      -- all_reduce to recombine
+  |
+x (replicated)
+```
+
+- `n_heads` and `n_kv_groups` are divided by `world_size` at init
+- `q_norm`, `k_norm` are unchanged (per-head, head_dim is the same)
+- Constraint: `n_heads % world_size == 0` and `n_kv_groups % world_size == 0`
+
+**ParallelSwiGLUFFN**:
+```
+x (replicated)
+  |
+  gate_proj: ColumnParallel  -- split hidden across ranks
+  up_proj:   ColumnParallel  -- split hidden across ranks
+  |
+  silu(gate) * up  -- element-wise on split hidden
+  |
+  down_proj: RowParallel     -- all_reduce to recombine
+  |
+x (replicated)
+```
+
+**ParallelTransformersBlock**: wraps `ParallelGroupQueryAttention` + `ParallelSwiGLUFFN` with pre-norm + residual. Same structure as the non-parallel `TransformerBlock`.
+
+### Step 4: Parallel Model (`qwen3/model.py`)
+
+`ParallelQwen3Model` added at the bottom of existing `model.py`:
+
+```python
+class ParallelQwen3Model(nn.Module):
+    def __init__(self, config):
+        self.tok_emb = ParallelEmbedding(config.vocab_size, config.emb_dim)
+        self.rope = RoPE(...)           # replicated
+        self.layers = [ParallelTransformersBlock(config) for ...]
+        self.final_norm = RMSNorm(...)  # replicated
+        self.lm_head = ColumnParallelLinear(config.emb_dim, config.vocab_size, bias=False)
+        # weight tying works the same way
+
+    def forward(self, token_ids, position_ids, kv_cache=None, attn_mask=None):
+        # ... same flow as Qwen3Model ...
+        logits = self.lm_head(x)  # (batch, seq, vocab_size // world_size)
+
+        # gather split logits so caller gets full vocab
+        if world_size > 1:
+            all_logits = [torch.zeros_like(logits) for _ in range(world_size)]
+            dist.all_gather(all_logits, logits)
+            logits = torch.cat(all_logits, dim=-1)  # (batch, seq, vocab_size)
+
+        return logits, new_kv_cache
+```
+
+Key decision: **all_gather logits inside the model** so `generate()` works without changes.
+
+### Step 5: Parallel Weight Loading (`qwen3/weights.py`)
+
+`load_parallel_weights` added at the bottom of existing `weights.py`:
+
+```python
+COLUMN_PARALLEL_SUFFIXES = (
+    "q_proj.weight", "k_proj.weight", "v_proj.weight",
+    "gate_proj.weight", "up_proj.weight",
+    "tok_emb.weight", "lm_head.weight",
+)
+ROW_PARALLEL_SUFFIXES = ("o_proj.weight", "down_proj.weight")
+
+def load_parallel_weights(model, model_dir, dtype=None):
+    for f in sorted(model_dir.glob("*.safetensors")):
+        shard = load_file(str(f))
+        for hf_key, tensor in shard.items():
+            new_key = rename_hf_key(hf_key)  # reuses existing key mapping
+            if new_key.endswith(COLUMN_PARALLEL_SUFFIXES):
+                tensor = shard_tensor(tensor, 0)   # shard output dim
+            elif new_key.endswith(ROW_PARALLEL_SUFFIXES):
+                tensor = shard_tensor(tensor, 1)   # shard input dim
+            # norms, q_norm, k_norm: replicated (no sharding)
+            ...
+        model.load_state_dict(renamed, strict=False, assign=True)
+    # re-tie lm_head if checkpoint omits it
+```
+
+Weight sharding rules:
 
 | Layer | Shard rule |
 |-------|-----------|
@@ -239,19 +209,98 @@ Weight loading rules for each key:
 | `attn.q_norm.weight` | NO shard (per-head, head_dim unchanged) |
 | `attn.k_norm.weight` | NO shard (per-head, head_dim unchanged) |
 
-The general rule:
-- **ColumnParallel weights**: shard dim=0 (output dim), also shard bias dim=0 if present
-- **RowParallel weights**: shard dim=1 (input dim), bias is NOT sharded (replicated)
-- **VocabParallelEmbedding weights**: shard dim=0 (vocab rows)
-- **Everything else**: replicated (norms, RoPE buffers)
+General rule:
+- **ColumnParallel**: shard dim=0
+- **RowParallel**: shard dim=1
+- **ParallelEmbedding**: shard dim=0
+- **Everything else**: replicated
+
+### Step 6: Generation Sync (`qwen3/generate.py`)
+
+Sampling is stochastic (`torch.multinomial`), so each rank would sample a different token. Fix: **broadcast from rank 0** after every `sample()` call.
+
+```python
+next_token = sample(logits[:, -1, :], ...)
+if dist.is_initialized():
+    if next_token.dim() == 0:
+        next_token = next_token.unsqueeze(0)
+    dist.broadcast(next_token, src=0)
+```
+
+This is done in both the prefill and decode loop.
+
+### Step 7: Unified Main Flow (`qwen3/main.py`)
+
+`main()` uses `dist.is_initialized()` to pick the right model loader:
+
+```python
+def main():
+    from parallel.comm import init_process_group, destroy_process_group, get_rank, get_world_size
+
+    # torchrun sets RANK env var — init distributed if present
+    if "RANK" in os.environ:
+        init_process_group()
+
+    if dist.is_initialized():
+        model, tokenizer, config = load_parallel_model(model_dir)
+    else:
+        model, tokenizer, config = load_model(model_dir, device=args.device)
+
+    # shared inference path — generate() works for both
+    output_text = run_inference(model, tokenizer, config, ...)
+
+    if dist.is_initialized():
+        destroy_process_group()
+```
+
+`load_parallel_model` moves the model to the assigned GPU only when enough GPUs exist:
+```python
+if torch.cuda.is_available() and torch.cuda.device_count() >= get_world_size():
+    model = model.to(torch.cuda.current_device())
+```
+
+### Step 8: Tests
+
+Tests reuse existing `test_knowledge.py` and `test_accuracy.py` — no separate parallel test files.
+
+**How it works**: `tests/conftest.py` calls `init_process_group()` when `RANK` is in env. Then test files swap the loader at import time:
+
+```python
+if dist.is_initialized():
+    from qwen3.main import load_parallel_model as load_model
+else:
+    from qwen3.main import load_model
+```
+
+**Running parallel tests**:
+```bash
+PYTHONPATH=. uv run torchrun --nproc_per_node=2 -m pytest tests/qwen3/test_knowledge.py \
+    -m slow -v -s --model Qwen3-0.6B --device cpu
+PYTHONPATH=. uv run torchrun --nproc_per_node=2 -m pytest tests/qwen3/test_accuracy.py \
+    -m slow -v -s --model Qwen3-0.6B --device cpu
+```
+
+Accuracy tests use `mismatch_expected=True` for parallel mode because tensor parallelism changes computation order (split matmul + all_reduce), causing float differences in bf16.
+
+### Lessons Learned
+
+1. **Connection closed by peer**: `sample()` with temperature > 0 uses `torch.multinomial` (stochastic), so each rank sampled different tokens. One rank hit EOS before the other, destroyed its process group, and the other got "connection closed". Fix: `dist.broadcast(next_token, src=0)` after each sample.
+
+2. **NCCL duplicate GPU error**: NCCL does not allow multiple ranks on the same GPU. Running `torchrun --nproc_per_node=2` on a single-GPU machine fails. Fix: auto-detect backend — fall back to gloo when `device_count < world_size`.
+
+3. **Accuracy test deadlock**: Rank 1 reached `all_reduce` (inside parallel model) while rank 0 was still doing HuggingFace reference inference. Fix: `dist.barrier()` before the parallel inference in accuracy tests.
+
+4. **bf16 accuracy mismatches**: Tensor parallelism splits matmuls differently (partial sums + all_reduce vs full matmul), producing different float rounding in bf16. These are expected and the accuracy test accommodates them with `mismatch_expected=True`.
+
+5. **dist.is_initialized() at import time**: Test files check `dist.is_initialized()` to choose the model loader. This works because `conftest.py` runs before test modules are imported, calling `init_process_group()` when under torchrun.
 
 ---
 
-## Step 3: Qwen3-MoE Parallel Model
+## Qwen3-MoE (Planned)
 
 Same attention parallelism as Qwen3. The difference is the MoE FFN block.
 
-### 3.1 MoE FFN Parallelism
+### MoE FFN Parallelism
 
 Qwen3-MoE uses **fused 3D expert weights**:
 - `gate_up_proj`: `(n_experts, 2 * moe_hidden_dim, emb_dim)`
@@ -275,50 +324,9 @@ x (replicated)
 x (replicated, after all_reduce)
 ```
 
-```python
-class ParallelSparseMoEBlock(nn.Module):
-    def __init__(self, emb_dim, n_experts, n_experts_per_token, moe_hidden_dim, moe_norm_topk_prob, world_size=1):
-        super().__init__()
-        self.world_size = world_size
-        self.local_moe_hidden_dim = moe_hidden_dim // world_size
+Important: all_reduce ONCE after all experts (not per expert).
 
-        # Router is replicated (small, needs full expert scores)
-        self.router = MoERouter(emb_dim, n_experts, n_experts_per_token, moe_norm_topk_prob)
-
-        # Expert weights sharded along hidden_dim
-        self.gate_up_proj = nn.Parameter(
-            torch.empty(n_experts, 2 * self.local_moe_hidden_dim, emb_dim)
-        )
-        self.down_proj = nn.Parameter(
-            torch.empty(n_experts, emb_dim, self.local_moe_hidden_dim)
-        )
-
-    def forward(self, x):
-        batch, seq_len, emb_dim = x.shape
-        hidden_states = x.view(-1, emb_dim)
-        routing_weights, selected_experts = self.router(hidden_states)
-        final_hidden_states = torch.zeros_like(hidden_states)
-
-        for expert_idx in selected_experts.unique():
-            token_idx, top_k_pos = torch.where(selected_experts == expert_idx)
-            current_state = hidden_states[token_idx]
-
-            gate, up = F.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
-            current_hidden_states = F.silu(gate) * up
-            current_hidden_states = F.linear(current_hidden_states, self.down_proj[expert_idx])
-            # NOTE: do NOT all_reduce here per expert. Accumulate first.
-
-            current_hidden_states *= routing_weights[token_idx, top_k_pos, None]
-            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
-
-        # all_reduce ONCE after all experts (not per expert)
-        if self.world_size > 1:
-            all_reduce(final_hidden_states)
-
-        return final_hidden_states.view(batch, seq_len, emb_dim)
-```
-
-### 3.2 Weight sharding for MoE 3D tensors
+### Weight sharding for MoE 3D tensors
 
 | Layer | Original shape | Shard rule |
 |-------|---------------|-----------|
@@ -333,56 +341,35 @@ gate_up = torch.stack([
     torch.cat([parts[(j, "gate_proj")], parts[(j, "up_proj")]], dim=0)
     for j in range(n_experts)
 ])  # (n_experts, 2 * moe_hidden_dim, emb_dim)
-gate_up = shard_weight(gate_up, dim=1, rank=rank, world_size=world_size)
+gate_up = shard_tensor(gate_up, dim=1)
 
 down = torch.stack([
     parts[(j, "down_proj")] for j in range(n_experts)
 ])  # (n_experts, emb_dim, moe_hidden_dim)
-down = shard_weight(down, dim=2, rank=rank, world_size=world_size)
+down = shard_tensor(down, dim=2)
 ```
 
 ---
 
-## Step 4: GPT-OSS Parallel Model
+## GPT-OSS (Planned)
 
-GPT-OSS follows the same tensor parallel pattern as Qwen3-MoE, with these differences:
+Same tensor parallel pattern as Qwen3-MoE, with these differences:
 
-### 4.1 Attention differences
+### Attention differences
 
 - **bias=True** on q/k/v/out projections: biases must also be sharded for ColumnParallel (dim=0), but NOT sharded for RowParallel (replicated, summed once via all_reduce)
 - **No q_norm/k_norm**: nothing extra to handle
-- **Attention sinks**: `self.sinks = nn.Parameter(shape (1, n_heads, 1, 1))` -- shard along n_heads dim (dim=1). Each rank stores `(1, n_heads // world_size, 1, 1)`
+- **Attention sinks**: `self.sinks = nn.Parameter(shape (1, n_heads, 1, 1))` — shard along n_heads dim (dim=1)
 - **Sliding window**: no change needed (works per-head, same logic)
 
-```python
-class ParallelGPTOSSAttention(nn.Module):
-    def __init__(self, emb_dim, n_heads, n_kv_groups, head_dim, layer_idx, sliding_window, world_size=1):
-        super().__init__()
-        self.n_heads = n_heads // world_size
-        self.n_kv_groups = n_kv_groups // world_size
-        self.head_dim = head_dim
-        self.group_size = n_heads // n_kv_groups  # same ratio
-        self.layer_idx = layer_idx
-        self.sliding_window = sliding_window
-
-        self.sinks = nn.Parameter(torch.empty(1, self.n_heads, 1, 1))  # local heads
-        self.q_proj = ColumnParallelLinear(emb_dim, n_heads * head_dim, world_size, bias=True)
-        self.k_proj = ColumnParallelLinear(emb_dim, n_kv_groups * head_dim, world_size, bias=True)
-        self.v_proj = ColumnParallelLinear(emb_dim, n_kv_groups * head_dim, world_size, bias=True)
-        self.out = RowParallelLinear(n_heads * head_dim, emb_dim, world_size, bias=True)
-
-    # forward: same as original, using local n_heads/n_kv_groups
-```
-
-### 4.2 MoE FFN differences
+### MoE FFN differences
 
 - Expert weights have **biases**: `gate_up_proj_bias (n_experts, moe_hidden_dim*2)` and `down_proj_bias (n_experts, emb_dim)`
 - `gate_up_proj_bias`: shard dim=1 (follows gate_up_proj_weight sharding)
-- `down_proj_bias`: NO shard (output dim, replicated -- combined via all_reduce on the output)
-- **SwiGLUFFN activation** has no parameters (just interleaved indexing on the split tensor)
-- **MXFP4 decompression**: decompress first, THEN shard. Decompression in `weights.py` stays the same, just add sharding after `decompress_mxfp4()`
+- `down_proj_bias`: NO shard (output dim, replicated)
+- **MXFP4 decompression**: decompress first, THEN shard
 
-### 4.3 Weight sharding for GPT-OSS
+### Weight sharding for GPT-OSS
 
 | Layer | Original shape | Shard rule |
 |-------|---------------|-----------|
@@ -404,134 +391,14 @@ class ParallelGPTOSSAttention(nn.Module):
 
 ---
 
-## Step 5: Weight Loading Pattern
-
-Create a shared utility in `parallel/weights.py`:
-
-```python
-def shard_weight(tensor, dim, rank, world_size):
-    """Slice tensor along dim for this rank."""
-    if world_size <= 1:
-        return tensor
-    size = tensor.shape[dim]
-    assert size % world_size == 0, f"dim {dim} size {size} not divisible by {world_size}"
-    shard_size = size // world_size
-    start = rank * shard_size
-    return tensor.narrow(dim, start, shard_size).contiguous()
-```
-
-Each model's `parallel_weights.py` follows this pattern:
-
-```python
-def load_weights(model, model_dir, dtype=None, rank=0, world_size=1):
-    for f in sorted(model_dir.glob("*.safetensors")):
-        shard = load_file(str(f))
-        renamed = {}
-        for hf_key, tensor in shard.items():
-            new_key = rename_hf_key(hf_key)
-            # Apply sharding based on key suffix
-            if new_key.endswith(("q_proj.weight", "k_proj.weight", "v_proj.weight")):
-                tensor = shard_weight(tensor, dim=0, rank=rank, world_size=world_size)
-            elif new_key.endswith("o_proj.weight"):
-                tensor = shard_weight(tensor, dim=1, rank=rank, world_size=world_size)
-            elif new_key.endswith(("gate_proj.weight", "up_proj.weight")):
-                tensor = shard_weight(tensor, dim=0, rank=rank, world_size=world_size)
-            elif new_key.endswith("down_proj.weight"):
-                tensor = shard_weight(tensor, dim=1, rank=rank, world_size=world_size)
-            elif new_key.endswith("tok_emb.weight"):
-                tensor = shard_weight(tensor, dim=0, rank=rank, world_size=world_size)
-            elif new_key.endswith("lm_head.weight"):
-                tensor = shard_weight(tensor, dim=0, rank=rank, world_size=world_size)
-            # else: replicated (norms, etc.)
-            renamed[new_key] = tensor
-        model.load_state_dict(renamed, strict=False, assign=True)
-```
-
----
-
-## Step 6: Generation / Inference
-
-In `generate.py`, the key change is handling the split `lm_head` output.
-
-**Option A: Gather logits** (simpler, more memory)
-```python
-# Each rank has logits of shape (batch, seq, vocab_size // world_size)
-# all_gather to get full (batch, seq, vocab_size) on every rank
-local_logits = model(token_ids, ...)
-all_logits = [torch.zeros_like(local_logits) for _ in range(world_size)]
-dist.all_gather(all_logits, local_logits)
-full_logits = torch.cat(all_logits, dim=-1)
-next_token = full_logits[:, -1, :].argmax(dim=-1)
-```
-
-**Option B: Local argmax + reduce** (less memory, works for greedy)
-```python
-local_logits = model(token_ids, ...)[:, -1, :]  # (batch, vocab_size // world_size)
-local_max_val, local_max_idx = local_logits.max(dim=-1)
-# Adjust local index to global index
-local_max_idx += rank * (vocab_size // world_size)
-# all_reduce to find global max (need custom reduce)
-```
-
-Option A is recommended for simplicity.
-
----
-
-## Step 7: Launching Multi-Process Inference
-
-```python
-# parallel_main.py
-import torch.multiprocessing as mp
-from parallel import init_process_group, destroy_process_group
-
-def run_worker(rank, world_size, model_dir, prompt):
-    init_process_group(rank, world_size)
-
-    config = Config.from_model_dir(model_dir)
-    with torch.device("meta"):
-        model = ParallelModel(config, world_size=world_size)
-    load_weights(model, model_dir, dtype=config.dtype, rank=rank, world_size=world_size)
-
-    # generate...
-
-    destroy_process_group()
-
-if __name__ == "__main__":
-    world_size = 2
-    mp.spawn(run_worker, args=(world_size, model_dir, prompt), nprocs=world_size)
-```
-
----
-
-## Implementation Order
-
-Recommended order to implement:
-
-1. **`parallel/tensor.py`** -- add `VocabParallelEmbedding`
-2. **`parallel/weights.py`** -- add `shard_weight` utility
-3. **`qwen3/parallel_layers.py`** -- `ParallelGroupQueryAttention`, `ParallelSwiGLUFFN`, `ParallelTransformerBlock`
-4. **`qwen3/parallel_model.py`** -- `ParallelQwen3Model`
-5. **`qwen3/parallel_weights.py`** -- sharded weight loading
-6. **Test qwen3 parallel** (compare output with non-parallel, world_size=1 should match exactly)
-7. **`qwen3_moe/parallel_layers.py`** -- reuse attn from qwen3 parallel, add `ParallelSparseMoEBlock`
-8. **`qwen3_moe/parallel_model.py`** + **`qwen3_moe/parallel_weights.py`**
-9. **Test qwen3_moe parallel**
-10. **`gpt_oss/parallel_layers.py`** -- handle bias, sinks, fused SwiGLU, MXFP4
-11. **`gpt_oss/parallel_model.py`** + **`gpt_oss/parallel_weights.py`**
-12. **Test gpt_oss parallel**
-
----
-
 ## Checklist Per Model
 
-For each model, verify:
-
-- [ ] `world_size=1` produces identical output to the non-parallel model
-- [ ] `n_heads % world_size == 0` and `n_kv_groups % world_size == 0`
-- [ ] `hidden_dim % world_size == 0` (and `moe_hidden_dim` for MoE)
-- [ ] `vocab_size % world_size == 0`
-- [ ] All-reduce count matches expectations:
-  - Dense (qwen3): 2 per layer (one for attn o_proj, one for ffn down_proj) + 1 for embedding
-  - MoE (qwen3_moe, gpt_oss): 2 per layer (one for attn, one for MoE block after all experts) + 1 for embedding
-- [ ] Weight shapes after sharding match model parameter shapes
-- [ ] Generation produces correct text with world_size > 1
+- [x] Qwen3: `world_size=1` produces identical output to the non-parallel model
+- [x] Qwen3: `n_heads % world_size == 0` and `n_kv_groups % world_size == 0`
+- [x] Qwen3: `hidden_dim % world_size == 0`
+- [x] Qwen3: `vocab_size % world_size == 0`
+- [x] Qwen3: All-reduce count matches: 2 per layer (attn o_proj + ffn down_proj) + 1 for embedding
+- [x] Qwen3: Weight shapes after sharding match model parameter shapes
+- [x] Qwen3: Generation produces correct text with world_size=2
+- [ ] Qwen3-MoE: all of the above + `moe_hidden_dim % world_size == 0`
+- [ ] GPT-OSS: all of the above + bias sharding + MXFP4 decompression before sharding

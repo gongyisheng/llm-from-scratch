@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest", "transformers>=5.2,<6", "accelerate", "huggingface_hub", "tqdm"]
+test = ["pytest", "transformers>=5.2,<5.3", "accelerate", "huggingface_hub", "tqdm"]
 
 [tool.pytest.ini_options]
 markers = ["slow: run full model inference (requires checkpoints)"]

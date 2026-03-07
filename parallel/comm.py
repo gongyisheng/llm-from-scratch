@@ -31,6 +31,8 @@ def init_process_group(backend: str = "auto"):
     if torch.cuda.is_available():
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(local_rank % torch.cuda.device_count())
+        # cublaslt is required for bfloat16/float16 GEMMs on H200 + CUDA 12.8+
+        torch.backends.cuda.preferred_blas_library("cublaslt")
 
 
 def get_rank() -> int:

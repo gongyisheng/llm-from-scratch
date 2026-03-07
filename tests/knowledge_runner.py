@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.utils import checkpoint_available, extract_answer, get_model, infer
+from tests.utils import _print, checkpoint_available, extract_answer, get_model, infer
 
 
 def run_single_prompt_test(model_name, device, prompt, expected, load_model_fn, run_inference_fn, model_arch="qwen3"):
@@ -10,9 +10,9 @@ def run_single_prompt_test(model_name, device, prompt, expected, load_model_fn, 
 
     output = infer(model_name, device, prompt, load_model_fn, run_inference_fn)
     answer = extract_answer(output, model_arch=model_arch)
-    print(f"\n  Prompt: {prompt!r}")
-    print(f"  Output: {output!r}")
-    print(f"  Answer: {answer!r}")
+    _print(f"\n  Prompt: {prompt!r}")
+    _print(f"  Output: {output!r}")
+    _print(f"  Answer: {answer!r}")
     assert expected in answer, f"Expected {expected!r} in answer, got: {answer}"
     return output, answer
 
@@ -50,9 +50,9 @@ def run_batch_test(model_name, device, prompts, expected, load_model_fn, generat
     for i, prompt in enumerate(prompts):
         text = tokenizer.decode(batch_outputs[i])
         answer = extract_answer(text, model_arch=model_arch)
-        print(f"\n  Prompt: {prompt!r}")
-        print(f"  Output: {text!r}")
-        print(f"  Answer: {answer!r}")
+        _print(f"\n  Prompt: {prompt!r}")
+        _print(f"  Output: {text!r}")
+        _print(f"  Answer: {answer!r}")
         assert expected[i] in answer, (
             f"Prompt {i}: expected {expected[i]!r} in batch answer, got: {answer}"
         )

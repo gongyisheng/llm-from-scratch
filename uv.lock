@@ -341,7 +341,7 @@ requires-dist = [
     { name = "tokenizers" },
     { name = "torch" },
     { name = "tqdm", marker = "extra == 'test'" },
-    { name = "transformers", marker = "extra == 'test'", specifier = ">=5.2,<6" },
+    { name = "transformers", marker = "extra == 'test'", specifier = ">=5.2,<5.3" },
 ]
 provides-extras = ["test"]
 

@@ -2,7 +2,6 @@ import pytest
 
 from qwen3.main import load_model, run_inference
 from qwen3.generate import generate_batch
-
 from tests.knowledge_runner import run_single_prompt_test, run_thinking_test, run_batch_test
 
 slow = pytest.mark.slow

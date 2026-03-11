@@ -296,58 +296,116 @@ Accuracy tests use `mismatch_expected=True` for parallel mode because tensor par
 
 ---
 
-## Qwen3-MoE (Planned)
+## Qwen3-MoE
 
-Same attention parallelism as Qwen3. The difference is the MoE FFN block.
+Same attention parallelism as Qwen3. Steps 1-2 (comm.py, tensor.py) are shared infrastructure — no changes needed. The difference is the MoE FFN block replacing dense SwiGLUFFN.
 
-### MoE FFN Parallelism
+### File Structure
+
+```
+qwen3_moe/
+├── layers.py      # GQA (same parallel pattern), MoERouter (replicated), SparseMoEBlock (sharded experts)
+├── model.py       # Qwen3MoEModel with ParallelEmbedding + all_gather on logits
+├── weights.py     # Expert fusion + sharding (fuse first, then shard_tensor)
+├── generate.py    # broadcast after sample() for parallel sync
+└── main.py        # torchrun detection, unified single/parallel flow
+```
+
+### Step 3: Parallel Layers (`qwen3_moe/layers.py`)
+
+**Attention**: identical to Qwen3. ColumnParallel q/k/v, RowParallel o_proj, divide `n_heads` and `n_kv_groups` by `world_size`.
+
+**MoERouter**: stays as regular `nn.Linear(emb_dim, n_experts)`. Must be **replicated** — all ranks need identical routing decisions, otherwise tokens get dispatched to wrong experts.
+
+**ParallelSparseMoEBlock** — tensor parallel within each expert:
 
 Qwen3-MoE uses **fused 3D expert weights**:
 - `gate_up_proj`: `(n_experts, 2 * moe_hidden_dim, emb_dim)`
 - `down_proj`: `(n_experts, emb_dim, moe_hidden_dim)`
 
-**Strategy: Tensor parallel within each expert** (split hidden_dim, keep all experts on all ranks).
+**Strategy**: split `moe_hidden_dim` across ranks (keep all experts on all ranks).
 
 ```
 x (replicated)
   |
-  router.proj (replicated)  -- each rank needs full routing decisions
+  router.proj (replicated)  -- each rank needs identical routing decisions
   |
-  gate_up_proj: shard dim=1 (hidden_dim axis)
-    shape: (n_experts, 2 * moe_hidden_dim // world_size, emb_dim)
+  for each active expert:
+    gate_up_proj[expert_idx]: shape (2 * moe_hidden_dim // world_size, emb_dim)  -- no comm
+    chunk -> silu(gate) * up  -- element-wise on split hidden
+    down_proj[expert_idx]: shape (emb_dim, moe_hidden_dim // world_size)         -- no comm yet
+    weighted by routing_weight, accumulated into output via index_add_
   |
-  chunk -> silu(gate) * up   -- element-wise on split hidden
+  all_reduce(output)  -- ONCE after entire loop, not per expert
   |
-  down_proj: shard dim=2 (hidden_dim axis), all_reduce output
-    shape: (n_experts, emb_dim, moe_hidden_dim // world_size)
-  |
-x (replicated, after all_reduce)
+x (replicated)
 ```
 
-Important: all_reduce ONCE after all experts (not per expert).
+Why this works: each rank computes a **partial sum** of each expert's output (because `down_proj` input dim is split). The partial sums accumulate into the output tensor, and a single `all_reduce` combines them. This gives exactly **2 all_reduces per layer** (1 attn + 1 MoE), same as the dense Qwen3.
 
-### Weight sharding for MoE 3D tensors
+Constraint: `moe_hidden_dim % world_size == 0` (768 / 2 = 384, ok).
 
-| Layer | Original shape | Shard rule |
-|-------|---------------|-----------|
-| `moe_ffn.gate_up_proj` | `(n_experts, 2*moe_hidden_dim, emb_dim)` | shard dim=1 |
-| `moe_ffn.down_proj` | `(n_experts, emb_dim, moe_hidden_dim)` | shard dim=2 |
-| `moe_ffn.router.proj.weight` | `(n_experts, emb_dim)` | NO shard |
+### Step 4: Parallel Model (`qwen3_moe/model.py`)
 
-For qwen3_moe `weights.py`, the expert fusion logic must shard during fusion:
+Same pattern as Qwen3, with one difference: `tie_word_embeddings=False` in Qwen3-MoE, so `lm_head` has its own weights (no re-tying after load).
+
 ```python
-# When fusing per-expert weights into 3D:
+class ParallelQwen3MoEModel(nn.Module):
+    def __init__(self, config):
+        self.tok_emb = ParallelEmbedding(config.vocab_size, config.emb_dim)
+        self.layers = [ParallelMoETransformersBlock(config) for ...]
+        self.final_norm = RMSNorm(...)  # replicated
+        self.lm_head = ColumnParallelLinear(config.emb_dim, config.vocab_size, bias=False)
+        # NO weight tying (tie_word_embeddings=False)
+
+    def forward(self, ...):
+        # ... same flow ...
+        logits = self.lm_head(x)  # (batch, seq, vocab_size // world_size)
+        if world_size > 1:
+            all_logits = [torch.zeros_like(logits) for _ in range(world_size)]
+            dist.all_gather(all_logits, logits)
+            logits = torch.cat(all_logits, dim=-1)
+        return logits, new_kv_cache
+```
+
+### Step 5: Parallel Weight Loading (`qwen3_moe/weights.py`)
+
+Expert weights are loaded per-expert from HuggingFace, fused into 3D tensors, **then** sharded:
+
+```python
+# fuse per-expert weights into 3D
 gate_up = torch.stack([
     torch.cat([parts[(j, "gate_proj")], parts[(j, "up_proj")]], dim=0)
     for j in range(n_experts)
 ])  # (n_experts, 2 * moe_hidden_dim, emb_dim)
-gate_up = shard_tensor(gate_up, dim=1)
+gate_up = shard_tensor(gate_up, dim=1)  # shard hidden dim
 
 down = torch.stack([
     parts[(j, "down_proj")] for j in range(n_experts)
 ])  # (n_experts, emb_dim, moe_hidden_dim)
-down = shard_tensor(down, dim=2)
+down = shard_tensor(down, dim=2)  # shard hidden dim
 ```
+
+Full weight sharding rules:
+
+| Layer | Original shape | Shard rule |
+|-------|---------------|-----------|
+| `tok_emb.weight` | `(vocab, emb_dim)` | shard dim=0 |
+| `attn.q_proj.weight` | `(n_heads*head_dim, emb_dim)` | shard dim=0 |
+| `attn.k_proj.weight` | `(n_kv*head_dim, emb_dim)` | shard dim=0 |
+| `attn.v_proj.weight` | `(n_kv*head_dim, emb_dim)` | shard dim=0 |
+| `attn.o_proj.weight` | `(emb_dim, n_heads*head_dim)` | shard dim=1 |
+| `moe_ffn.gate_up_proj` | `(n_experts, 2*moe_hidden_dim, emb_dim)` | shard dim=1 |
+| `moe_ffn.down_proj` | `(n_experts, emb_dim, moe_hidden_dim)` | shard dim=2 |
+| `moe_ffn.router.proj.weight` | `(n_experts, emb_dim)` | NO shard |
+| `lm_head.weight` | `(vocab, emb_dim)` | shard dim=0 |
+| `*.norm*.weight` | | NO shard |
+| `attn.q_norm.weight` | | NO shard |
+| `attn.k_norm.weight` | | NO shard |
+
+### Step 6-8: Generation, Main, Tests
+
+Identical to Qwen3 — broadcast after `sample()`, torchrun detection in main, same test structure with `mismatch_expected=True` for parallel mode.
 
 ---
 
@@ -400,5 +458,13 @@ Same tensor parallel pattern as Qwen3-MoE, with these differences:
 - [x] Qwen3: All-reduce count matches: 2 per layer (attn o_proj + ffn down_proj) + 1 for embedding
 - [x] Qwen3: Weight shapes after sharding match model parameter shapes
 - [x] Qwen3: Generation produces correct text with world_size=2
-- [ ] Qwen3-MoE: all of the above + `moe_hidden_dim % world_size == 0`
+- [ ] Qwen3-MoE: `world_size=1` produces identical output to the non-parallel model
+- [ ] Qwen3-MoE: `n_heads % world_size == 0` and `n_kv_groups % world_size == 0`
+- [ ] Qwen3-MoE: `moe_hidden_dim % world_size == 0`
+- [ ] Qwen3-MoE: `vocab_size % world_size == 0`
+- [ ] Qwen3-MoE: All-reduce count: 2 per layer (attn o_proj + MoE after expert loop) + 1 for embedding
+- [ ] Qwen3-MoE: Router replicated — identical routing decisions on all ranks
+- [ ] Qwen3-MoE: Expert fusion happens before sharding (fuse 3D, then shard_tensor)
+- [ ] Qwen3-MoE: Weight shapes after sharding match model parameter shapes
+- [ ] Qwen3-MoE: Generation produces correct text with world_size=2
 - [ ] GPT-OSS: all of the above + bias sharding + MXFP4 decompression before sharding

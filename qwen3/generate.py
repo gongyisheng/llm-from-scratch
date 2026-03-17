@@ -1,4 +1,5 @@
 import torch
+import torch.distributed as dist
 
 from qwen3.model import Qwen3Model
 
@@ -46,6 +47,11 @@ def generate(
     attn_mask = torch.where(causal_mask, float("-inf"), 0.0)[None, None].to(dtype)
     logits, kv_cache = model(input_ids, position_ids, attn_mask=attn_mask)
     next_token = sample(logits[:, -1, :], temperature=temperature, top_k=top_k)
+    # broadcast so all ranks use the same token (sampling is stochastic)
+    if dist.is_initialized():
+        if next_token.dim() == 0:
+            next_token = next_token.unsqueeze(0)
+        dist.broadcast(next_token, src=0)
     generated = [next_token.item()]
 
     # decode loop
@@ -54,6 +60,10 @@ def generate(
         position_ids = torch.tensor([[offset]], device=device)
         logits, kv_cache = model(next_token.view(1, 1), position_ids, kv_cache)
         next_token = sample(logits[:, -1, :], temperature=temperature, top_k=top_k)
+        if dist.is_initialized():
+            if next_token.dim() == 0:
+                next_token = next_token.unsqueeze(0)
+            dist.broadcast(next_token, src=0)
         generated.append(next_token.item())
         if eos_token_id is not None and next_token.item() == eos_token_id:
             break
@@ -124,6 +134,9 @@ def generate_batch(
     next_tokens = sample(logits[:, -1, :], temperature=temperature, top_k=top_k)
     if next_tokens.dim() == 1:
         next_tokens = next_tokens.unsqueeze(1)
+    # broadcast so all ranks use the same tokens (sampling is stochastic)
+    if dist.is_initialized():
+        dist.broadcast(next_tokens, src=0)
 
     generated = [[next_tokens[i].item()] for i in range(batch_size)]
     finished = [False] * batch_size
@@ -161,6 +174,8 @@ def generate_batch(
         next_tokens = sample(logits[:, -1, :], temperature=temperature, top_k=top_k)
         if next_tokens.dim() == 1:
             next_tokens = next_tokens.unsqueeze(1)
+        if dist.is_initialized():
+            dist.broadcast(next_tokens, src=0)
 
         for i in range(batch_size):
             if not finished[i]:

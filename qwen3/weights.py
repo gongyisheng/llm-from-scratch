@@ -2,6 +2,8 @@ from pathlib import Path
 import torch
 from safetensors.torch import load_file
 
+from parallel.tensor import shard_tensor
+
 # HF key -> your model's state_dict key
 KEY_MAP = {
     "model.embed_tokens.weight": "tok_emb.weight",
@@ -23,6 +25,18 @@ LAYER_KEY_MAP = {
     "mlp.up_proj.weight": "ffn.up_proj.weight",
     "mlp.down_proj.weight": "ffn.down_proj.weight",
 }
+
+COLUMN_PARALLEL_SUFFIXES = (
+    "q_proj.weight",
+    "k_proj.weight",
+    "v_proj.weight",
+    "gate_proj.weight",
+    "up_proj.weight",
+    "tok_emb.weight",
+    "lm_head.weight",
+)
+
+ROW_PARALLEL_SUFFIXES = ("o_proj.weight", "down_proj.weight")
 
 
 def rename_hf_key(hf_key: str) -> str | None:
@@ -53,6 +67,10 @@ def load_weights(model, model_dir: str | Path, dtype: torch.dtype | None = None)
             if new_key is None:
                 print(f"skipping unknown key: {hf_key}")
                 continue
+            if new_key.endswith(COLUMN_PARALLEL_SUFFIXES):
+                tensor = shard_tensor(tensor, 0)
+            elif new_key.endswith(ROW_PARALLEL_SUFFIXES):
+                tensor = shard_tensor(tensor, 1)
             if dtype is not None:
                 tensor = tensor.to(dtype=dtype)
             renamed[new_key] = tensor

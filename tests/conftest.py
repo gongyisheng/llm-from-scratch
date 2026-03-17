@@ -1,4 +1,15 @@
+import atexit
+import os
+
 import pytest
+import torch
+
+
+# init distributed when running under torchrun
+if "RANK" in os.environ:
+    from parallel.comm import init_process_group, destroy_process_group
+    init_process_group()
+    atexit.register(destroy_process_group)
 
 
 def pytest_addoption(parser):
@@ -8,15 +19,13 @@ def pytest_addoption(parser):
     )
     parser.addoption(
         "--device", default=None,
-        help="Device to run tests on (e.g. cpu, cuda, cuda:0). Defaults to module's DEFAULT_DEVICE.",
+        help="Device to run tests on (e.g. cpu, cuda, cuda:0)",
     )
 
 
 def pytest_generate_tests(metafunc):
     if "model_name" in metafunc.fixturenames:
         models = metafunc.config.getoption("model")
-        if not models:
-            models = getattr(metafunc.module, "DEFAULT_MODELS", None)
         if not models:
             pytest.skip("No --model specified and no DEFAULT_MODELS in module")
         metafunc.parametrize("model_name", models)
@@ -27,4 +36,4 @@ def device(request):
     cli = request.config.getoption("device")
     if cli is not None:
         return cli
-    return getattr(request.module, "DEFAULT_DEVICE", "cuda")
+    return "cuda" if torch.cuda.is_available() else "cpu"

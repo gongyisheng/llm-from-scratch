@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from parallel.comm import get_world_size
+from parallel.tensor import ColumnParallelLinear, RowParallelLinear
+
 
 class RMSNorm(nn.Module):
     # root-mean-square layer normalization
@@ -59,9 +62,9 @@ class RoPE(nn.Module):
 class SwiGLUFFN(nn.Module):
     def __init__(self, emb_dim, hidden_dim):
         super().__init__()
-        self.gate_proj = nn.Linear(emb_dim, hidden_dim, bias=False)
-        self.up_proj = nn.Linear(emb_dim, hidden_dim, bias=False)
-        self.down_proj = nn.Linear(hidden_dim, emb_dim, bias=False)
+        self.gate_proj = ColumnParallelLinear(emb_dim, hidden_dim, bias=False)
+        self.up_proj = ColumnParallelLinear(emb_dim, hidden_dim, bias=False)
+        self.down_proj = RowParallelLinear(hidden_dim, emb_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x.shape: (batch, seq_len, emb_dim)
@@ -76,14 +79,16 @@ class GroupQueryAttention(nn.Module):
     def __init__(self, emb_dim, n_heads, n_kv_groups, head_dim):
         super().__init__()
         self.emb_dim = emb_dim
-        self.n_heads = n_heads
-        self.n_kv_groups = n_kv_groups
         self.head_dim = head_dim
+        world_size = get_world_size()
+        self.n_heads_local = n_heads // world_size
+        self.n_kv_groups_local = n_kv_groups // world_size
+        self.group_size = n_heads // n_kv_groups
 
-        self.q_proj = nn.Linear(self.emb_dim, self.n_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(self.emb_dim, self.n_kv_groups * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(self.emb_dim, self.n_kv_groups * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.n_heads * self.head_dim, self.emb_dim, bias=False)
+        self.q_proj = ColumnParallelLinear(self.emb_dim, self.head_dim * n_heads, bias=False)
+        self.k_proj = ColumnParallelLinear(self.emb_dim, self.head_dim * n_kv_groups, bias=False)
+        self.v_proj = ColumnParallelLinear(self.emb_dim, self.head_dim * n_kv_groups, bias=False)
+        self.o_proj = RowParallelLinear(self.head_dim * n_heads, self.emb_dim, bias=False)
 
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
@@ -100,17 +105,14 @@ class GroupQueryAttention(nn.Module):
         batch, seq_len, _ = x.shape
 
         # projection + reshape to [batch, heads, seq, head_dim]
-        Q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-        K = self.k_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
-        V = self.v_proj(x).view(batch, seq_len, self.n_kv_groups, self.head_dim).transpose(1, 2)
+        # n_heads and n_kv_groups are local counts (already divided by world_size)
+        Q = self.q_proj(x).view(batch, seq_len, self.n_heads_local, self.head_dim).transpose(1, 2)
+        K = self.k_proj(x).view(batch, seq_len, self.n_kv_groups_local, self.head_dim).transpose(1, 2)
+        V = self.v_proj(x).view(batch, seq_len, self.n_kv_groups_local, self.head_dim).transpose(1, 2)
 
-        # Q/K norm (reshape to [batch*heads, seq, head_dim] for RMSNorm, then back)
-        # attention logits can explode, need norm
-        Q = self.q_norm(Q.reshape(-1, seq_len, self.head_dim))
-        Q = Q.view(batch, self.n_heads, seq_len, self.head_dim)
-
-        K = self.k_norm(K.reshape(-1, seq_len, self.head_dim))
-        K = K.view(batch, self.n_kv_groups, seq_len, self.head_dim)
+        # Q/K norm: attention logits can explode, need norm
+        Q = self.q_norm(Q)
+        K = self.k_norm(K)
 
         # apply rope
         Q = rope(Q, position_ids)
@@ -118,15 +120,14 @@ class GroupQueryAttention(nn.Module):
 
         if kv_cache is not None:
             past_k, past_v = kv_cache
-            # q shape: (batch, n_head, seq_len(prompt_len or 1), head_dim)
+            # q shape: (batch, n_heads, seq_len(prompt_len or 1), head_dim)
             # kv shape: (batch, n_kv_groups, seq_len_so_far, head_dim)
             K = torch.concat([past_k, K], dim=2)
             V = torch.concat([past_v, V], dim=2)
         new_kv_cache = (K, V)
 
-        group_size = self.n_heads // self.n_kv_groups
-        K = K.repeat_interleave(group_size, dim=1)
-        V = V.repeat_interleave(group_size, dim=1)
+        K = K.repeat_interleave(self.group_size, dim=1)
+        V = V.repeat_interleave(self.group_size, dim=1)
 
         # attn score, Q attends to all past tokens via kv cache
         scores = Q @ K.transpose(-2, -1) / (self.head_dim**0.5)

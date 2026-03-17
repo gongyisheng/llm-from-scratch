@@ -1,9 +1,18 @@
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
+
+from parallel.comm import (
+    init_process_group, 
+    destroy_process_group, 
+    get_rank, 
+    get_world_size
+)
 
 from qwen3.config import Qwen3Config
 from qwen3.tokenizer import Qwen3Tokenizer
@@ -118,7 +127,12 @@ def load_model(model_dir, device="auto"):
     model.eval()
 
     device = resolve_device(device)
-    model = model.to(device=device)
+    # Under torchrun with CUDA requested, place each rank on its assigned GPU.
+    # Respect explicit --device cpu even when distributed is initialized.
+    if dist.is_initialized() and device == "cuda":
+        model = model.to(torch.cuda.current_device())
+    else:
+        model = model.to(device=device)
 
     return model, tokenizer, config
 
@@ -154,17 +168,28 @@ def run_inference(
 
 
 def main():
+
     args = parse_args()
 
+    # torchrun sets RANK env var — init distributed if present
+    if "RANK" in os.environ:
+        init_process_group()
+
     model_dir = Path(__file__).resolve().parent.parent / "checkpoints" / args.model
-    ensure_checkpoint(args.model, model_dir)
+    # Only rank 0 prompts for download; other ranks wait at the barrier.
+    if get_rank() == 0:
+        ensure_checkpoint(args.model, model_dir)
+    if dist.is_initialized():
+        dist.barrier()
 
     model, tokenizer, config = load_model(model_dir, device=args.device)
 
-    print(f"Model: {args.model}")
-    print(f"Device: {next(model.parameters()).device}")
-    print(f"Thinking: {'on' if args.thinking else 'off'}")
-    print("Generating...\n")
+    if get_rank() == 0:
+        print(f"Model: {args.model}")
+        print(f"Device: {next(model.parameters()).device}")
+        print(f"World size: {get_world_size()}")
+        print(f"Thinking: {'on' if args.thinking else 'off'}")
+        print("Generating...\n")
 
     start = time.time()
     output_text = run_inference(
@@ -179,17 +204,20 @@ def main():
     )
     elapsed = time.time() - start
 
-    # decode and print
-    token_count = len(tokenizer.encode(output_text))
-    prompt_count = len(tokenizer.encode(
-        tokenizer.apply_chat_template(
-            [{"role": "user", "content": args.prompt}],
-            enable_thinking=args.thinking,
-        )
-    ))
-    new_tokens = token_count - prompt_count
-    print(output_text)
-    print(f"\n--- {new_tokens} tokens in {elapsed:.2f}s ({new_tokens/elapsed:.1f} tok/s) ---")
+    if get_rank() == 0:
+        token_count = len(tokenizer.encode(output_text))
+        prompt_count = len(tokenizer.encode(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": args.prompt}],
+                enable_thinking=args.thinking,
+            )
+        ))
+        new_tokens = token_count - prompt_count
+        print(output_text)
+        print(f"\n--- {new_tokens} tokens in {elapsed:.2f}s ({new_tokens/elapsed:.1f} tok/s) ---")
+
+    if dist.is_initialized():
+        destroy_process_group()
 
 
 if __name__ == "__main__":
